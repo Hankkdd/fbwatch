@@ -108,6 +108,37 @@ func Load(b *rod.Browser, url string, timeout, settle time.Duration, ready func(
 	return page, doc, err
 }
 
+// LoadPage 導向任意網址並等到 ready 成立，用於動態牆以外的頁面。
+//
+// 與 Load 分開是因為 Load 會先等 data-virtualized（虛擬列表的標記），
+// 那只存在於動態牆；商品詳情頁沒有，會白等到逾時。
+func LoadPage(b *rod.Browser, url string, timeout time.Duration, ready func(string) bool) (*rod.Page, string, error) {
+	page, err := b.Page(proto.TargetCreateTarget{URL: "about:blank"})
+	if err != nil {
+		return nil, "", err
+	}
+	if _, err := (proto.PageNavigate{URL: url}).Call(page); err != nil {
+		_ = page.Close()
+		return nil, "", err
+	}
+	_ = (proto.PageBringToFront{}).Call(page)
+
+	deadline := time.Now().Add(timeout)
+	var doc string
+	for {
+		if d, err := OuterHTML(page); err == nil {
+			doc = d
+			if ready == nil || ready(doc) {
+				return page, doc, nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return page, doc, fmt.Errorf("等待頁面就緒逾時（%s）", timeout)
+		}
+		time.Sleep(time.Second)
+	}
+}
+
 // LoggedOut 判斷是否被導向登入或 checkpoint。
 func LoggedOut(page *rod.Page) (bool, string) {
 	info, err := page.Info()
