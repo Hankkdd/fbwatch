@@ -58,10 +58,14 @@ docker compose exec collector /app/collect
 go test ./...
 ```
 
-store 的測試需要資料庫，未設 `FBWATCH_TEST_DSN` 會自動跳過：
+store 的測試需要資料庫，未設 `FBWATCH_TEST_DSN` 會自動跳過。
+
+**要用獨立的資料庫，不要指向 `fbwatch`。** 測試會寫入 listing 列，
+指向正式庫的話那些假資料會被當成新貼文推到 Discord。
 
 ```bash
-FBWATCH_TEST_DSN='postgres://fbwatch:<pw>@localhost:55432/fbwatch?sslmode=disable' go test ./internal/store/
+docker compose exec postgres psql -U fbwatch -d postgres -c 'CREATE DATABASE fbwatch_test OWNER fbwatch;'
+FBWATCH_TEST_DSN='postgres://fbwatch:<pw>@localhost:55432/fbwatch_test?sslmode=disable' go test ./internal/store/
 ```
 
 ## 不要提交的東西

@@ -29,7 +29,9 @@ type jsonPrice struct {
 }
 
 // ListingPage 從詳情頁的 HTML 取出結構化資料。
-// 第二個回傳值表示是否至少取到描述 —— 那是這次抓取的主要目的。
+//
+// 第二個回傳值表示是否認得這是一個商品頁。只有照片、沒有文字描述的貼文
+// 仍算成功 —— 它的 creation_time 一樣有價值，不該讓它反覆重試。
 func ListingPage(doc string) (Detail, bool) {
 	var d Detail
 
@@ -57,7 +59,7 @@ func ListingPage(doc string) (Detail, bool) {
 		d.Currency = price.Currency
 	}
 
-	return d, d.Description != ""
+	return d, d.Description != "" || !d.CreatedAt.IsZero()
 }
 
 // decodeFieldAfter 找到 `"key":` 之後用 json.Decoder 解析接下來那個值。

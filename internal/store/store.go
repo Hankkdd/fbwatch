@@ -62,9 +62,16 @@ func (s *Store) Upsert(ctx context.Context, groupID string, l parse.Listing, now
 	price := nullableInt(l.Price)
 	ntTag := nullableInt(l.NTTag)
 
+	// feed 上的時間只有小時級精度（「1小時」可能實際是 1 小時 55 分），
+	// 推算出來可能落在我們看到它之後 —— 實測出現過 -7 分鐘的 feed_lag。
+	// 貼文不可能晚於我們第一次看到它，所以鉗制在 now。
 	var postedAt *time.Time
 	if !l.PostedAt.IsZero() {
-		postedAt = &l.PostedAt
+		p := l.PostedAt
+		if p.After(now) {
+			p = now
+		}
+		postedAt = &p
 	}
 
 	err = s.pool.QueryRow(ctx, `
@@ -121,11 +128,14 @@ type Pending struct {
 	Permalink string
 }
 
-// PendingBodies 回傳內文被截斷、尚未取得完整版、且重試次數未達上限的 listing。
+// PendingBodies 回傳尚未抓過詳情頁、且重試次數未達上限的 listing。
+//
+// 不限於內文被截斷的：詳情頁同時帶精確的 creation_time，
+// 而 feed 的相對時間只有小時級精度，延遲量測需要精確值才可信。
 func (s *Store) PendingBodies(ctx context.Context, limit int) ([]Pending, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, group_id, permalink FROM listings
-		WHERE truncated AND NOT body_fetched AND body_attempts < $2
+		WHERE NOT body_fetched AND body_attempts < $2
 		ORDER BY first_seen DESC
 		LIMIT $1`, limit, maxBodyAttempts)
 	if err != nil {
@@ -149,11 +159,18 @@ func (s *Store) PendingBodies(ctx context.Context, limit int) ([]Pending, error)
 // 價格與狀態用完整內文重算 —— feed 的截斷版可能讓價格抓錯。
 // creation_time 是精確時間，一律覆蓋相對時間的推算值。
 func (s *Store) UpdateBody(ctx context.Context, id string, d parse.Detail) error {
-	price := nullableInt(parse.ExtractPrice(d.Description))
-	if price == nil && d.Price > 0 && d.Price != parse.WantedSentinel {
-		price = &d.Price
+	// 沒有描述的貼文（只有照片）不重算價格與狀態，也不覆蓋既有內文，
+	// 但仍要標記已抓過並記下精確時間，否則會一直重試到次數上限。
+	var price *int
+	var status *string
+	if d.Description != "" {
+		price = nullableInt(parse.ExtractPrice(d.Description))
+		if price == nil && d.Price > 0 && d.Price != parse.WantedSentinel {
+			price = &d.Price
+		}
+		st := string(parse.DetectStatus(d.Description, d.Price))
+		status = &st
 	}
-	status := string(parse.DetectStatus(d.Description, d.Price))
 
 	var createdAt *time.Time
 	if !d.CreatedAt.IsZero() {
@@ -162,14 +179,15 @@ func (s *Store) UpdateBody(ctx context.Context, id string, d parse.Detail) error
 
 	_, err := s.pool.Exec(ctx, `
 		UPDATE listings SET
-			body         = $2,
+			body         = COALESCE(NULLIF($2, ''), body),
 			body_fetched = TRUE,
 			price        = COALESCE($3, price),
-			status       = $4,
+			status       = COALESCE($4, status),
 			location     = COALESCE($5, location),
 			currency     = COALESCE($6, currency),
 			posted_at       = COALESCE($7, posted_at),
-			posted_at_exact = ($7 IS NOT NULL)
+			-- 只會由估算升級為精確，不會反向降級
+			posted_at_exact = (posted_at_exact OR $7 IS NOT NULL)
 		WHERE id = $1`,
 		id, d.Description, price, status,
 		nullableStr(d.Location), nullableStr(d.Currency), createdAt)
