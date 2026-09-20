@@ -12,6 +12,7 @@ import (
 	"log"
 	"math/rand"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -71,7 +72,10 @@ func main() {
 		log.Printf("以 FBWATCH_GROUPS 初始化 %d 個社團", n)
 	}
 
-	sched := schedule.Default()
+	sched := schedule.FromEnv(os.Getenv)
+	log.Printf("輪詢節奏：日間 %s–%s，夜間 %s–%s；每輪補抓上限 %d",
+		sched.DayMin, sched.DayMax, sched.NightMin, sched.NightMax, bodiesPerCycle())
+
 	br := breaker.New(maxConsecutiveFailures)
 	var silentAlerted bool
 
@@ -179,8 +183,19 @@ func checkSilence(ctx context.Context, st *store.Store, dc *notify.Discord, aler
 }
 
 // bodiesPerCycle 限制每輪補抓的則數。
+//
 // 這是輪詢之外的額外請求，量要壓住；剩下的下一輪會接著處理。
-const bodiesPerCycle = 3
+// 但上限太低時，一次湧入多則新貼文會讓後面的跨輪等待 ——
+// 實測看過通知延遲因此拉到 7 分半。
+func bodiesPerCycle() int {
+	n := 3
+	if v := os.Getenv("FBWATCH_BODIES_PER_CYCLE"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 && parsed <= 20 {
+			n = parsed
+		}
+	}
+	return n
+}
 
 // fetchBodies 對內文被截斷的 listing 抓詳情頁，取完整內容。
 //
@@ -188,7 +203,7 @@ const bodiesPerCycle = 3
 // 是完整的，所以不需要點「查看更多」，沒有任何互動。
 // 同時能取得精確的 creation_time，比 feed 的相對時間推算準得多。
 func fetchBodies(ctx context.Context, st *store.Store, b *rod.Browser) error {
-	pending, err := st.PendingBodies(ctx, bodiesPerCycle)
+	pending, err := st.PendingBodies(ctx, bodiesPerCycle())
 	if err != nil || len(pending) == 0 {
 		return err
 	}
@@ -248,7 +263,9 @@ func sendPending(ctx context.Context, st *store.Store, dc *notify.Discord) error
 
 	var sent []string
 	for _, p := range pending {
-		msg := p.Permalink
+		// 用 <> 包住網址，Discord 就不會展開連結預覽卡片。
+		// FB 的預覽卡片又大又沒資訊量，把真正要看的內文擠到畫面外。
+		msg := "<" + p.Permalink + ">"
 		if p.Body != "" {
 			msg += "\n" + p.Body
 		}

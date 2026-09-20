@@ -50,3 +50,42 @@ func TestNextIsJittered(t *testing.T) {
 		t.Fatalf("50 次只產生 %d 種間隔，抖動不足", len(seen))
 	}
 }
+
+func TestFromEnvOverrides(t *testing.T) {
+	env := map[string]string{
+		"FBWATCH_POLL_DAY_MIN":   "45",
+		"FBWATCH_POLL_DAY_MAX":   "120",
+		"FBWATCH_POLL_NIGHT_MIN": "300",
+	}
+	c := FromEnv(func(k string) string { return env[k] })
+
+	if c.DayMin != 45*time.Second || c.DayMax != 120*time.Second {
+		t.Errorf("日間 = %s–%s, want 45s–120s", c.DayMin, c.DayMax)
+	}
+	if c.NightMin != 300*time.Second {
+		t.Errorf("夜間下限 = %s, want 300s", c.NightMin)
+	}
+	if c.NightMax != Default().NightMax {
+		t.Errorf("未設定的項目應保持預設，實得 %s", c.NightMax)
+	}
+}
+
+// 間隔太短會讓隨機化失去意義，變成穩定的高頻打點 —— 那正是機器人簽章。
+func TestFromEnvEnforcesFloor(t *testing.T) {
+	env := map[string]string{"FBWATCH_POLL_DAY_MIN": "2", "FBWATCH_POLL_DAY_MAX": "3"}
+	c := FromEnv(func(k string) string { return env[k] })
+	if c.DayMin < 30*time.Second {
+		t.Errorf("DayMin = %s，應被下限保護在 30s 以上", c.DayMin)
+	}
+	if c.DayMax <= c.DayMin {
+		t.Errorf("DayMax(%s) 必須大於 DayMin(%s)", c.DayMax, c.DayMin)
+	}
+}
+
+func TestFromEnvIgnoresGarbage(t *testing.T) {
+	env := map[string]string{"FBWATCH_POLL_DAY_MIN": "abc", "FBWATCH_POLL_DAY_MAX": "-5"}
+	c := FromEnv(func(k string) string { return env[k] })
+	if c.DayMin != Default().DayMin || c.DayMax != Default().DayMax {
+		t.Errorf("無效值應退回預設，實得 %s–%s", c.DayMin, c.DayMax)
+	}
+}
