@@ -126,6 +126,7 @@ type Pending struct {
 	ID        string
 	GroupID   string
 	Permalink string
+	Body      string // 完整內文，尚未補抓時退回 feed 上的截斷版
 }
 
 // PendingBodies 回傳尚未抓過詳情頁、且重試次數未達上限的 listing。
@@ -205,7 +206,7 @@ func (s *Store) RecordBodyAttempt(ctx context.Context, id string) error {
 // PendingNotifications 回傳尚未通知的 listing，舊的優先。
 func (s *Store) PendingNotifications(ctx context.Context, limit int) ([]Pending, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, group_id, permalink FROM listings
+		SELECT id, group_id, permalink, COALESCE(body, body_feed, '') FROM listings
 		WHERE notified_at IS NULL
 		ORDER BY first_seen ASC
 		LIMIT $1`, limit)
@@ -217,7 +218,7 @@ func (s *Store) PendingNotifications(ctx context.Context, limit int) ([]Pending,
 	var out []Pending
 	for rows.Next() {
 		var p Pending
-		if err := rows.Scan(&p.ID, &p.GroupID, &p.Permalink); err != nil {
+		if err := rows.Scan(&p.ID, &p.GroupID, &p.Permalink, &p.Body); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
