@@ -5,6 +5,7 @@
 package browser
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -138,6 +139,12 @@ func LoadPage(b *rod.Browser, url string, timeout time.Duration, ready func(stri
 		time.Sleep(time.Second)
 	}
 }
+
+// ErrSessionInvalid 表示登入態失效或帳號被 checkpoint。
+//
+// 這類失敗絕不能重試：重試會把軟性封鎖升級成硬封鎖，
+// 而且恢復需要人工重新登入，機器再試幾次都沒有意義。
+var ErrSessionInvalid = errors.New("登入態失效")
 
 // LoggedOut 判斷是否被導向登入或 checkpoint。
 func LoggedOut(page *rod.Page) (bool, string) {
