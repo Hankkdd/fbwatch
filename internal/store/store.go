@@ -62,23 +62,31 @@ func (s *Store) Upsert(ctx context.Context, groupID string, l parse.Listing, now
 	price := nullableInt(l.Price)
 	ntTag := nullableInt(l.NTTag)
 
+	var postedAt *time.Time
+	if !l.PostedAt.IsZero() {
+		postedAt = &l.PostedAt
+	}
+
 	err = s.pool.QueryRow(ctx, `
 		INSERT INTO listings (
 			id, group_id, seller_id, body_feed, truncated,
 			price, nt_tag, status, permalink, raw_html,
-			first_seen, last_seen, parser_version
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,$12)
+			posted_at, first_seen, last_seen, parser_version
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,$13)
 		ON CONFLICT (id) DO UPDATE SET
 			last_seen = EXCLUDED.last_seen,
 			status    = EXCLUDED.status,
 			price     = COALESCE(EXCLUDED.price, listings.price),
 			body_feed = EXCLUDED.body_feed,
-			raw_html  = EXCLUDED.raw_html
+			raw_html  = EXCLUDED.raw_html,
+			-- 相對時間的精度只會隨時間變差（「25分鐘」之後會變成「1小時」），
+			-- 所以第一次算出來的值最準，不要覆蓋。
+			posted_at = COALESCE(listings.posted_at, EXCLUDED.posted_at)
 		RETURNING (xmax = 0)
 	`,
 		l.ID, groupID, nullableStr(l.SellerID), l.Text, l.Truncated,
 		price, ntTag, string(l.Status), l.Permalink, l.RawHTML,
-		now, ParserVersion,
+		postedAt, now, ParserVersion,
 	).Scan(&isNew)
 	if err != nil {
 		return false, err

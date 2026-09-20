@@ -29,7 +29,10 @@ func main() {
 	dsn := flag.String("dsn", os.Getenv("FBWATCH_DSN"), "Postgres DSN")
 	groups := flag.String("groups", os.Getenv("FBWATCH_GROUPS"), "社團 ID，逗號分隔")
 	wait := flag.Duration("wait", 60*time.Second, "等待 feed 渲染的上限")
-	loop := flag.Bool("loop", os.Getenv("FBWATCH_LOOP") == "1", "持續輪詢，間隔隨機")
+	// 預設 false 且刻意不讀 FBWATCH_LOOP：容器內那個環境變數是給 entrypoint 看的，
+	// 若旗標也跟著它，手動 `docker compose exec collector /app/collect` 會意外
+	// 起第二個迴圈，讓對 FB 的請求速率加倍。誤跑一次無害，誤開迴圈有風險。
+	loop := flag.Bool("loop", false, "持續輪詢，間隔隨機")
 	flag.Parse()
 
 	if *dsn == "" || *groups == "" {
@@ -148,7 +151,26 @@ func collectGroup(ctx context.Context, st *store.Store, b *rod.Browser, gid stri
 }
 
 func fetch(b *rod.Browser, gid string, wait time.Duration) ([]parse.Listing, error) {
-	page, doc, err := browser.Load(b, browser.GroupURL(gid), wait, 3*time.Second)
+	// 時間戳記的隱藏節點晚於貼文容器出現。少了它是靜默失效 ——
+	// 貼文抓得到、沒有錯誤，只有時間永遠是空的，延遲量測就永遠算不出來。
+	ready := func(doc string) bool {
+		root, err := html.Parse(strings.NewReader(doc))
+		if err != nil {
+			return false
+		}
+		items := parse.Articles(root)
+		if len(items) == 0 {
+			return false
+		}
+		for _, it := range items {
+			if !it.PostedAt.IsZero() {
+				return true
+			}
+		}
+		return false
+	}
+
+	page, doc, err := browser.Load(b, browser.GroupURL(gid), wait, 20*time.Second, ready)
 	if page != nil {
 		defer page.Close()
 	}

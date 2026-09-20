@@ -22,13 +22,18 @@ func article(listingID, sellerID, body, ntTag string) string {
 	</div>`
 }
 
-func parseHTML(t *testing.T, frag string) []Listing {
+func mustParse(t *testing.T, frag string) *html.Node {
 	t.Helper()
 	doc, err := html.Parse(strings.NewReader("<html><body>" + frag + "</body></html>"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return Articles(doc)
+	return doc
+}
+
+func parseHTML(t *testing.T, frag string) []Listing {
+	t.Helper()
+	return Articles(mustParse(t, frag))
 }
 
 func TestArticlesExtractsListing(t *testing.T) {
