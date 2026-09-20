@@ -39,11 +39,12 @@ services:
       # 綁 Tailscale 介面，不要綁 0.0.0.0
       - "${BIND_IP:-127.0.0.1}:${NOVNC_PORT:-6080}:6080"
     volumes:
-      # 直接掛宿主機既有的 profile，不要用 named volume。
-      # 重新登入是比「容器內外字型差異」強得多的風險訊號 —— FB 會主動挑戰
-      # 新裝置登入，但不會因為既有 session 的字型清單變動而挑戰。
-      # 沿用同一份 profile 就完全不需要重新登入。
-      - ./chrome-profile:/profile
+      # 直接掛宿主機的 profile 目錄，不要用 named volume。
+      #
+      # 換帳號時改指到另一個目錄，不要在同一個 profile 上登出再登入：
+      # 主帳號的登入態原封不動保留可隨時退回，備用帳號被 checkpoint 也
+      # 不會波及它，而且不會在主帳號上留下登出事件。
+      - ${PROFILE_DIR:-./chrome-profile}:/profile
     # Chrome 需要遠大於預設 64MB 的 /dev/shm，否則會崩潰
     shm_size: 2gb
     security_opt:

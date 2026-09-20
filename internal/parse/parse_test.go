@@ -154,3 +154,26 @@ func TestArticlesRejectsTextOnlyContainer(t *testing.T) {
 		t.Fatalf("純文字容器不該被當成貼文，實得 %d 則", len(got))
 	}
 }
+
+// href 可能相對也可能絕對。無條件補前綴會產生
+// https://www.facebook.comhttps://www.facebook.com/... 這種壞網址，
+// 而且只在後續抓取時表現為逾時，離成因很遠。
+func TestPermalinkHandlesAbsoluteAndRelativeHref(t *testing.T) {
+	cases := []struct{ href, want string }{
+		{"/groups/1/posts/2/?x=1", "https://www.facebook.com/groups/1/posts/2/"},
+		{"https://www.facebook.com/groups/1/posts/2/?x=1", "https://www.facebook.com/groups/1/posts/2/"},
+	}
+	for _, c := range cases {
+		frag := `<div data-virtualized="false">
+		   <div data-ad-rendering-role="story_message"><div dir="auto">測試</div></div>
+		   <a href="` + c.href + `">貼文</a>
+		 </div>`
+		got := parseHTML(t, frag)
+		if len(got) != 1 {
+			t.Fatalf("href=%q 應解析出 1 則，實得 %d", c.href, len(got))
+		}
+		if got[0].Permalink != c.want {
+			t.Errorf("href=%q → %q, want %q", c.href, got[0].Permalink, c.want)
+		}
+	}
+}

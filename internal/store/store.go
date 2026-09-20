@@ -255,6 +255,57 @@ func (s *Store) GroupSeeded(ctx context.Context, groupID string) (bool, error) {
 	return n > 0, nil
 }
 
+type Group struct {
+	ID   string
+	Name string
+}
+
+// EnabledGroups 回傳目前要監控的社團。每輪都重讀，
+// 所以在資料庫改 enabled 即時生效，不必重啟。
+func (s *Store) EnabledGroups(ctx context.Context) ([]Group, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, COALESCE(name, '') FROM groups WHERE enabled ORDER BY added_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Group
+	for rows.Next() {
+		var g Group
+		if err := rows.Scan(&g.ID, &g.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
+// SeedGroups 只在 groups 表為空時，用給定的 ID 初始化。
+//
+// 表一旦有內容就以表為準 —— 環境變數與資料庫同時有效的話，
+// 停用一個社團之後下次重啟又會被環境變數加回來。
+func (s *Store) SeedGroups(ctx context.Context, ids []string) (seeded int, err error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	var n int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM groups`).Scan(&n); err != nil {
+		return 0, err
+	}
+	if n > 0 {
+		return 0, nil
+	}
+	for _, id := range ids {
+		if _, err := s.pool.Exec(ctx,
+			`INSERT INTO groups (id) VALUES ($1) ON CONFLICT DO NOTHING`, id); err != nil {
+			return seeded, err
+		}
+		seeded++
+	}
+	return seeded, nil
+}
+
 // LastNewItem 回傳最後一次出現新 listing 的時間。
 // 第二個回傳值為 false 表示資料庫還是空的。
 func (s *Store) LastNewItem(ctx context.Context) (time.Time, bool, error) {

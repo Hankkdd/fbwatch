@@ -11,7 +11,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 go build -o /out/collect ./cmd/collect \
  && CGO_ENABLED=0 go build -o /out/dumpdom ./cmd/dumpdom \
  && CGO_ENABLED=0 go build -o /out/analyze ./cmd/analyze \
- && CGO_ENABLED=0 go build -o /out/gqlprobe ./cmd/gqlprobe
+ && CGO_ENABLED=0 go build -o /out/gqlprobe ./cmd/gqlprobe \
+ && CGO_ENABLED=0 go build -o /out/loadprobe ./cmd/loadprobe
 
 
 FROM debian:bookworm-slim

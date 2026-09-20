@@ -30,7 +30,7 @@ import (
 func main() {
 	cdp := flag.String("cdp", envOr("FBWATCH_CDP", "http://127.0.0.1:9222"), "Chrome CDP 端點")
 	dsn := flag.String("dsn", os.Getenv("FBWATCH_DSN"), "Postgres DSN")
-	groups := flag.String("groups", os.Getenv("FBWATCH_GROUPS"), "社團 ID，逗號分隔")
+	groups := flag.String("groups", os.Getenv("FBWATCH_GROUPS"), "社團 ID 逗號分隔；僅在 groups 表為空時用來初始化")
 	wait := flag.Duration("wait", 60*time.Second, "等待 feed 渲染的上限")
 	// 預設 false 且刻意不讀 FBWATCH_LOOP：容器內那個環境變數是給 entrypoint 看的，
 	// 若旗標也跟著它，手動 `docker compose exec collector /app/collect` 會意外
@@ -38,8 +38,9 @@ func main() {
 	loop := flag.Bool("loop", false, "持續輪詢，間隔隨機")
 	flag.Parse()
 
-	if *dsn == "" || *groups == "" {
-		log.Fatal("需要 -dsn 與 -groups（或對應的環境變數）")
+	// 社團清單以 groups 表為準，所以這裡不再要求 -groups
+	if *dsn == "" {
+		log.Fatal("需要 -dsn（或 FBWATCH_DSN）")
 	}
 
 	ctx := context.Background()
@@ -58,11 +59,16 @@ func main() {
 		log.Print("未設 DISCORD_WEBHOOK_URL，不會送出通知")
 	}
 
-	var ids []string
+	var seedIDs []string
 	for _, gid := range strings.Split(*groups, ",") {
 		if gid = strings.TrimSpace(gid); gid != "" {
-			ids = append(ids, gid)
+			seedIDs = append(seedIDs, gid)
 		}
+	}
+	if n, err := st.SeedGroups(ctx, seedIDs); err != nil {
+		log.Fatalf("初始化社團清單失敗: %v", err)
+	} else if n > 0 {
+		log.Printf("以 FBWATCH_GROUPS 初始化 %d 個社團", n)
 	}
 
 	sched := schedule.Default()
@@ -70,7 +76,17 @@ func main() {
 	var silentAlerted bool
 
 	for {
-		for _, gid := range ids {
+		// 每輪重讀，在資料庫改 enabled 即時生效，不必重啟
+		gs, err := st.EnabledGroups(ctx)
+		if err != nil {
+			log.Fatalf("讀取社團清單失敗: %v", err)
+		}
+		if len(gs) == 0 {
+			log.Print("沒有啟用中的社團，這輪跳過")
+		}
+
+		for _, g := range gs {
+			gid := g.ID
 			err := collectGroup(ctx, st, b, gid, *wait)
 			switch {
 			case err == nil:
@@ -177,7 +193,12 @@ func fetchBodies(ctx context.Context, st *store.Store, b *rod.Browser) error {
 		return err
 	}
 
-	ready := func(doc string) bool { return strings.Contains(doc, "redacted_description") }
+	// 商品頁的內文在 redacted_description，一般貼文頁在 message.text。
+	// 兩種頁型都要能過，否則貼文類的永遠等到逾時。
+	ready := func(doc string) bool {
+		return strings.Contains(doc, "redacted_description") ||
+			strings.Contains(doc, `"message":{"text"`)
+	}
 
 	for _, p := range pending {
 		// 與輪詢請求之間留隨機間隔，不要連續打
@@ -188,7 +209,9 @@ func fetchBodies(ctx context.Context, st *store.Store, b *rod.Browser) error {
 			return err
 		}
 
-		page, doc, err := browser.LoadPage(b, p.Permalink, 30*time.Second, ready)
+		// 60 秒而非 30：換帳號後 profile 的 HTTP 快取是空的，
+		// 所有資源都要重新下載，實測 30 秒不夠。快取暖起來後會快很多。
+		page, doc, err := browser.LoadPage(b, p.Permalink, 60*time.Second, ready)
 		if page != nil {
 			_ = page.Close()
 		}
