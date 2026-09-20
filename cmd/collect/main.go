@@ -210,7 +210,10 @@ func fetchBodies(ctx context.Context, st *store.Store, b *rod.Browser) error {
 	return nil
 }
 
-// sendPending 送出尚未通知的 listing。目前只傳連結。
+// sendPending 送出尚未通知的 listing：連結加完整內文，內容一字不改。
+//
+// 超過 Discord 單則上限的目錄型貼文會切成多則，不截斷 ——
+// 被截掉的往往正是後半段的品項與價格。
 func sendPending(ctx context.Context, st *store.Store, dc *notify.Discord) error {
 	if !dc.Enabled() {
 		return nil
@@ -219,16 +222,30 @@ func sendPending(ctx context.Context, st *store.Store, dc *notify.Discord) error
 	if err != nil {
 		return err
 	}
+
 	var sent []string
 	for _, p := range pending {
-		if err := dc.Send(ctx, p.Permalink); err != nil {
-			// 送失敗就不要標記，下一輪會重試
-			log.Printf("送出 %s 失敗: %v", p.ID, err)
+		msg := p.Permalink
+		if p.Body != "" {
+			msg += "\n" + p.Body
+		}
+
+		failed := false
+		for _, part := range notify.Split(msg, notify.MaxMessage) {
+			if err := dc.Send(ctx, part); err != nil {
+				// 送失敗就不標記，下一輪整則重送
+				log.Printf("送出 %s 失敗: %v", p.ID, err)
+				failed = true
+				break
+			}
+			time.Sleep(time.Second) // Discord webhook 有速率限制
+		}
+		if failed {
 			break
 		}
 		sent = append(sent, p.ID)
-		time.Sleep(time.Second) // Discord webhook 有速率限制
 	}
+
 	if len(sent) == 0 {
 		return nil
 	}
