@@ -138,3 +138,48 @@ func TestMarkNotified(t *testing.T) {
 		t.Fatal("MarkNotified 應設定 notified_at")
 	}
 }
+
+// feed 的相對時間只有小時級精度，推算值可能落在我們第一次看到貼文之後，
+// 產生負的 feed_lag。實測出現過 -7 分鐘。
+func TestUpsertClampsFuturePostedAt(t *testing.T) {
+	st, ctx := testStore(t)
+	gid := fmt.Sprintf("test-%d", time.Now().UnixNano())
+	now := time.Now().Truncate(time.Second)
+
+	l := sample(gid+"-clamp", 100, parse.StatusSelling)
+	l.PostedAt = now.Add(20 * time.Minute) // 推算成未來
+	if _, err := st.Upsert(ctx, gid, l, now); err != nil {
+		t.Fatal(err)
+	}
+
+	var got time.Time
+	if err := st.pool.QueryRow(ctx,
+		`SELECT posted_at FROM listings WHERE id = $1`, l.ID).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.After(now) {
+		t.Fatalf("posted_at = %v，不應晚於 first_seen %v", got, now)
+	}
+}
+
+func TestUpsertKeepsValidPostedAt(t *testing.T) {
+	st, ctx := testStore(t)
+	gid := fmt.Sprintf("test-%d", time.Now().UnixNano())
+	now := time.Now().Truncate(time.Second)
+
+	l := sample(gid+"-keep", 100, parse.StatusSelling)
+	want := now.Add(-2 * time.Hour)
+	l.PostedAt = want
+	if _, err := st.Upsert(ctx, gid, l, now); err != nil {
+		t.Fatal(err)
+	}
+
+	var got time.Time
+	if err := st.pool.QueryRow(ctx,
+		`SELECT posted_at FROM listings WHERE id = $1`, l.ID).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Equal(want) {
+		t.Fatalf("posted_at = %v, want %v（合理的過去時間不應被動到）", got, want)
+	}
+}
