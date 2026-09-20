@@ -59,6 +59,12 @@ func (s *Store) Migrate(ctx context.Context) error {
 // Upsert 寫入一則 listing，回傳它是否為首次出現。
 // 已存在的只更新 last_seen 與可能變動的欄位，first_seen 保持不動。
 func (s *Store) Upsert(ctx context.Context, groupID string, l parse.Listing, now time.Time) (isNew bool, err error) {
+	// 第二道防線。解析端已經要求必須有 ID，但寫入層不該相信呼叫端 ——
+	// 沒有 permalink 的東西不是社團貼文，實測曾把 Messenger 的私人對話寫進來。
+	if l.ID == "" {
+		return false, fmt.Errorf("listing 缺少 ID，拒絕寫入")
+	}
+
 	price := nullableInt(l.Price)
 	ntTag := nullableInt(l.NTTag)
 
