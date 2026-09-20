@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"strings"
 	"time"
@@ -69,6 +70,9 @@ func main() {
 				log.Printf("[%s] 失敗: %v", gid, err)
 			}
 		}
+		if err := fetchBodies(ctx, st, b); err != nil {
+			log.Printf("補抓內文失敗: %v", err)
+		}
 		if err := sendPending(ctx, st, dc); err != nil {
 			log.Printf("通知失敗: %v", err)
 		}
@@ -79,6 +83,54 @@ func main() {
 		log.Printf("下次輪詢 %s 後", d.Round(time.Second))
 		time.Sleep(d)
 	}
+}
+
+// bodiesPerCycle 限制每輪補抓的則數。
+// 這是輪詢之外的額外請求，量要壓住；剩下的下一輪會接著處理。
+const bodiesPerCycle = 3
+
+// fetchBodies 對內文被截斷的 listing 抓詳情頁，取完整內容。
+//
+// feed 上的內文是伺服器端截斷的，詳情頁的 DOM 也是 —— 但詳情頁的內嵌 JSON
+// 是完整的，所以不需要點「查看更多」，沒有任何互動。
+// 同時能取得精確的 creation_time，比 feed 的相對時間推算準得多。
+func fetchBodies(ctx context.Context, st *store.Store, b *rod.Browser) error {
+	pending, err := st.PendingBodies(ctx, bodiesPerCycle)
+	if err != nil || len(pending) == 0 {
+		return err
+	}
+
+	ready := func(doc string) bool { return strings.Contains(doc, "redacted_description") }
+
+	for _, p := range pending {
+		// 與輪詢請求之間留隨機間隔，不要連續打
+		time.Sleep(time.Duration(5+rand.Intn(15)) * time.Second)
+
+		// 先記次數再抓：中途崩潰不該讓這則永遠重試
+		if err := st.RecordBodyAttempt(ctx, p.ID); err != nil {
+			return err
+		}
+
+		page, doc, err := browser.LoadPage(b, p.Permalink, 30*time.Second, ready)
+		if page != nil {
+			_ = page.Close()
+		}
+		if err != nil {
+			log.Printf("補抓 %s 失敗: %v", p.ID, err)
+			continue
+		}
+		detail, ok := parse.ListingPage(doc)
+		if !ok {
+			log.Printf("補抓 %s：頁面沒有商品資料，略過", p.ID)
+			continue
+		}
+		if err := st.UpdateBody(ctx, p.ID, detail); err != nil {
+			return err
+		}
+		log.Printf("補抓 %s 完成（%d 字，%s）", p.ID,
+			len([]rune(detail.Description)), detail.CreatedAt.Format("01-02 15:04"))
+	}
+	return nil
 }
 
 // sendPending 送出尚未通知的 listing。目前只傳連結。

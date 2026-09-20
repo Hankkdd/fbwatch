@@ -7,7 +7,8 @@ CREATE INDEX IF NOT EXISTS listings_posted_at ON listings (posted_at DESC);
 
 -- 通知延遲：貼文發出 → 我們送出通知。
 -- notice_lag 是系統可控的部分（輪詢間隔），feed_lag 是 FB 自己的延遲。
-CREATE OR REPLACE VIEW notify_latency AS
+DROP VIEW IF EXISTS notify_latency;
+CREATE VIEW notify_latency AS
 SELECT
     id,
     group_id,

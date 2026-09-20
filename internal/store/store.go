@@ -110,10 +110,78 @@ func (s *Store) Upsert(ctx context.Context, groupID string, l parse.Listing, now
 	return isNew, nil
 }
 
+// maxBodyAttempts 限制對同一則詳情頁的請求次數。
+// 允許重試是因為網路瞬斷不該讓內文永久缺失，但必須有上限 ——
+// 無上限的重試會在 FB 改版時變成對同一批網址的持續請求。
+const maxBodyAttempts = 3
+
 type Pending struct {
 	ID        string
 	GroupID   string
 	Permalink string
+}
+
+// PendingBodies 回傳內文被截斷、尚未取得完整版、且重試次數未達上限的 listing。
+func (s *Store) PendingBodies(ctx context.Context, limit int) ([]Pending, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, group_id, permalink FROM listings
+		WHERE truncated AND NOT body_fetched AND body_attempts < $2
+		ORDER BY first_seen DESC
+		LIMIT $1`, limit, maxBodyAttempts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Pending
+	for rows.Next() {
+		var p Pending
+		if err := rows.Scan(&p.ID, &p.GroupID, &p.Permalink); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// UpdateBody 寫入詳情頁取得的完整內文與結構化欄位。
+//
+// 價格與狀態用完整內文重算 —— feed 的截斷版可能讓價格抓錯。
+// creation_time 是精確時間，一律覆蓋相對時間的推算值。
+func (s *Store) UpdateBody(ctx context.Context, id string, d parse.Detail) error {
+	price := nullableInt(parse.ExtractPrice(d.Description))
+	if price == nil && d.Price > 0 && d.Price != parse.WantedSentinel {
+		price = &d.Price
+	}
+	status := string(parse.DetectStatus(d.Description, d.Price))
+
+	var createdAt *time.Time
+	if !d.CreatedAt.IsZero() {
+		createdAt = &d.CreatedAt
+	}
+
+	_, err := s.pool.Exec(ctx, `
+		UPDATE listings SET
+			body         = $2,
+			body_fetched = TRUE,
+			price        = COALESCE($3, price),
+			status       = $4,
+			location     = COALESCE($5, location),
+			currency     = COALESCE($6, currency),
+			posted_at       = COALESCE($7, posted_at),
+			posted_at_exact = ($7 IS NOT NULL)
+		WHERE id = $1`,
+		id, d.Description, price, status,
+		nullableStr(d.Location), nullableStr(d.Currency), createdAt)
+	return err
+}
+
+// RecordBodyAttempt 記錄一次抓取嘗試，無論成敗。
+// 先記再抓：抓取中途崩潰不該讓這則永遠重試。
+func (s *Store) RecordBodyAttempt(ctx context.Context, id string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE listings SET body_attempts = body_attempts + 1 WHERE id = $1`, id)
+	return err
 }
 
 // PendingNotifications 回傳尚未通知的 listing，舊的優先。
