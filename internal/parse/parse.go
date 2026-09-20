@@ -1,6 +1,9 @@
 // Package parse 把社團動態的 DOM 轉成 listing。
 //
-// 錨點用 role="article"（無障礙標記），不用混淆過的 class name。
+// 定位方式分三層，每一層都是踩過坑才加上的：
+//  1. 範圍限定在 role="feed" 之內 —— Messenger 的聊天列表在它外面
+//  2. 單元錨點用 data-virtualized —— role="article" 是載入骨架不是貼文
+//  3. 必須有 listing／post permalink —— 沒有的就不是社團貼文
 package parse
 
 import (
@@ -53,7 +56,15 @@ func Articles(doc *html.Node) []Listing {
 
 // ArticlesAt 與 Articles 相同，但以指定的時間換算相對時間戳記。測試用。
 func ArticlesAt(doc *html.Node, now time.Time) []Listing {
-	idx := buildLabelIndex(doc)
+	idx := buildLabelIndex(doc) // 時間戳記的隱藏節點在 feed 之外，索引要用整份文件
+
+	// 只在動態牆容器裡面找。data-virtualized 是 FB 給所有虛擬列表的通用標記，
+	// 不是「這是貼文」的意思 —— Messenger 的聊天訊息列表也帶它，
+	// 實測因此把一段私人對話當成貼文抓走。範圍限定是比事後過濾更根本的防線。
+	root := doc
+	if feed := findAttr(doc, "role", "feed"); feed != nil {
+		root = feed
+	}
 
 	var out []Listing
 	var walk func(*html.Node)
@@ -73,7 +84,7 @@ func ArticlesAt(doc *html.Node, now time.Time) []Listing {
 			walk(c)
 		}
 	}
-	walk(doc)
+	walk(root)
 	return out
 }
 
@@ -188,7 +199,15 @@ func fromArticle(n *html.Node) (Listing, bool) {
 		l.RawHTML = buf.String()
 	}
 
-	return l, l.ID != "" || l.Text != ""
+	// 必須有 listing／post ID 才算數。
+	//
+	// 「有文字就算數」會外洩隱私：Messenger 的聊天視窗也是虛擬列表、
+	// 同樣帶 data-virtualized，實測把一段私人對話當成貼文抓走並送進 Discord。
+	// 沒有 permalink 的東西就不是社團貼文。
+	//
+	// 代價是 permalink 尚未渲染的貼文這一輪會被漏掉，下一輪再抓 ——
+	// 漏一輪遠比洩漏私人內容便宜。
+	return l, l.ID != ""
 }
 
 func attr(n *html.Node, key string) string {

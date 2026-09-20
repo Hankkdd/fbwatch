@@ -134,3 +134,23 @@ func TestArticlesCapturesRawHTML(t *testing.T) {
 		t.Error("RawHTML 應保留容器本身，供解析器改版後重跑")
 	}
 }
+
+// Messenger 的聊天視窗也是虛擬列表，同樣帶 data-virtualized。
+// 2026-09-20 實測：一段私人對話被當成貼文抓走並送進 Discord。
+// 沒有 listing／post permalink 的東西就不是社團貼文，必須丟掉。
+func TestArticlesRejectsContainerWithoutListingID(t *testing.T) {
+	chat := `<div data-virtualized="false">
+	   <div data-ad-rendering-role="story_message"><div dir="auto">好啦沒關係 輸入，訊息已在上午12:07由Karen傳送：好啦沒關係</div></div>
+	 </div>`
+	if got := parseHTML(t, chat); len(got) != 0 {
+		t.Fatalf("沒有 listing ID 的容器不該被當成貼文（會洩漏私人訊息），實得 %d 則: %q",
+			len(got), got[0].Text)
+	}
+}
+
+func TestArticlesRejectsTextOnlyContainer(t *testing.T) {
+	frag := `<div data-virtualized="false"><div dir="auto">一些不相干的介面文字</div></div>`
+	if got := parseHTML(t, frag); len(got) != 0 {
+		t.Fatalf("純文字容器不該被當成貼文，實得 %d 則", len(got))
+	}
+}
