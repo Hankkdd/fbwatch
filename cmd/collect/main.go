@@ -20,8 +20,10 @@ import (
 	"github.com/go-rod/rod/lib/launcher"
 	"golang.org/x/net/html"
 
+	"fbwatch/internal/blob"
 	"fbwatch/internal/breaker"
 	"fbwatch/internal/browser"
+	"fbwatch/internal/images"
 	"fbwatch/internal/notify"
 	"fbwatch/internal/parse"
 	"fbwatch/internal/schedule"
@@ -55,6 +57,17 @@ func main() {
 	}
 
 	b := rod.New().ControlURL(launcher.MustResolveURL(*cdp)).MustConnect()
+	// 圖片儲存是加值功能：連不上就不存圖，不該讓整個監控停擺
+	var bs *blob.Store
+	if ep := os.Getenv("MINIO_ENDPOINT"); ep != "" {
+		bs, err = blob.Open(ctx, ep, os.Getenv("MINIO_USER"),
+			os.Getenv("MINIO_PASSWORD"), envOr("MINIO_BUCKET", "listing-images"))
+		if err != nil {
+			log.Printf("MinIO 連線失敗，本次不保存圖片: %v", err)
+			bs = nil
+		}
+	}
+
 	dc := notify.NewDiscord(os.Getenv("DISCORD_WEBHOOK_URL"))
 	if !dc.Enabled() {
 		log.Print("未設 DISCORD_WEBHOOK_URL，不會送出通知")
@@ -112,7 +125,7 @@ func main() {
 			return
 		}
 
-		if err := fetchBodies(ctx, st, b); err != nil {
+		if err := fetchBodies(ctx, st, b, bs); err != nil {
 			log.Printf("補抓內文失敗: %v", err)
 		}
 		if err := sendPending(ctx, st, dc); err != nil {
@@ -202,7 +215,7 @@ func bodiesPerCycle() int {
 // feed 上的內文是伺服器端截斷的，詳情頁的 DOM 也是 —— 但詳情頁的內嵌 JSON
 // 是完整的，所以不需要點「查看更多」，沒有任何互動。
 // 同時能取得精確的 creation_time，比 feed 的相對時間推算準得多。
-func fetchBodies(ctx context.Context, st *store.Store, b *rod.Browser) error {
+func fetchBodies(ctx context.Context, st *store.Store, b *rod.Browser, bs *blob.Store) error {
 	pending, err := st.PendingBodies(ctx, bodiesPerCycle())
 	if err != nil || len(pending) == 0 {
 		return err
@@ -242,10 +255,61 @@ func fetchBodies(ctx context.Context, st *store.Store, b *rod.Browser) error {
 		if err := st.UpdateBody(ctx, p.ID, detail); err != nil {
 			return err
 		}
-		log.Printf("補抓 %s 完成（%d 字，%s）", p.ID,
-			len([]rune(detail.Description)), detail.CreatedAt.Format("01-02 15:04"))
+		n := saveImages(ctx, st, bs, p.ID, detail.Photos)
+		log.Printf("補抓 %s 完成（%d 字，%d 圖，%s）", p.ID,
+			len([]rune(detail.Description)), n, detail.CreatedAt.Format("01-02 15:04"))
 	}
 	return nil
+}
+
+// saveImages 下載並保存商品照片，回傳成功的張數。
+//
+// 圖片走 CDN，不需要登入態也不需要瀏覽器，所以對帳號風險幾乎為零。
+// 但網址帶簽章會過期 —— 必須在這裡就下載，不能只存網址等之後再說。
+//
+// 單張失敗不影響其他張，也不影響內文：圖片是加值，不是必要條件。
+func saveImages(ctx context.Context, st *store.Store, bs *blob.Store, listingID string, photos []parse.Photo) int {
+	if bs == nil || len(photos) == 0 {
+		return 0
+	}
+	f := images.NewFetcher()
+	saved := 0
+
+	for i, p := range photos {
+		// 下載前先用 FB 的 photo_id 去重，省下重複下載
+		if sum, ok, err := st.SHA256ForPhoto(ctx, p.ID); err == nil && ok {
+			if err := st.LinkImage(ctx, listingID, i, p.ID, sum, p.URL, p.Caption); err == nil {
+				saved++
+			}
+			continue
+		}
+
+		res, err := f.Fetch(ctx, p.URL)
+		if err != nil {
+			log.Printf("圖片 %s[%d] 下載失敗: %v", listingID, i, err)
+			// 仍記錄一列，保留順序與網址供日後查證
+			_ = st.LinkImage(ctx, listingID, i, p.ID, "", p.URL, p.Caption)
+			continue
+		}
+		if err := bs.Put(ctx, res.Key(), res.Bytes, res.ContentType); err != nil {
+			log.Printf("圖片 %s[%d] 寫入失敗: %v", listingID, i, err)
+			continue
+		}
+		if err := st.RecordImage(ctx, res.SHA256, res.Key(), len(res.Bytes), res.ContentType); err != nil {
+			log.Printf("圖片 %s[%d] 登記失敗: %v", listingID, i, err)
+			continue
+		}
+		if err := st.LinkImage(ctx, listingID, i, p.ID, res.SHA256, p.URL, p.Caption); err != nil {
+			log.Printf("圖片 %s[%d] 連結失敗: %v", listingID, i, err)
+			continue
+		}
+		saved++
+	}
+
+	if saved > 0 {
+		_ = st.MarkImagesFetched(ctx, listingID)
+	}
+	return saved
 }
 
 // sendPending 送出尚未通知的 listing：連結加完整內文，內容一字不改。

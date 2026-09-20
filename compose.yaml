@@ -19,6 +19,26 @@ services:
       retries: 10
     restart: unless-stopped
 
+  minio:
+    image: quay.io/minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER:-fbwatch}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:?請在 .env 設定 MINIO_PASSWORD}
+    ports:
+      # 這台機器的 9000 已被長期服務佔用，不要搶
+      - "127.0.0.1:${MINIO_PORT:-59000}:9000"
+      # console 綁 Tailscale 介面，方便從自己的電腦瀏覽已抓到的圖片
+      - "${BIND_IP:-127.0.0.1}:${MINIO_CONSOLE_PORT:-59001}:9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   collector:
     build:
       context: .
@@ -27,6 +47,8 @@ services:
         UID: "${HOST_UID:-1002}"
     depends_on:
       postgres:
+        condition: service_healthy
+      minio:
         condition: service_healthy
     environment:
       FBWATCH_DSN: postgres://fbwatch:${PG_PASSWORD}@postgres:5432/fbwatch?sslmode=disable
@@ -38,6 +60,10 @@ services:
       FBWATCH_POLL_NIGHT_MIN: ${FBWATCH_POLL_NIGHT_MIN:-}
       FBWATCH_POLL_NIGHT_MAX: ${FBWATCH_POLL_NIGHT_MAX:-}
       FBWATCH_BODIES_PER_CYCLE: ${FBWATCH_BODIES_PER_CYCLE:-}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_USER: ${MINIO_USER:-fbwatch}
+      MINIO_PASSWORD: ${MINIO_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-listing-images}
       DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
       VNC_PASSWORD: ${VNC_PASSWORD:?請在 .env 設定 VNC_PASSWORD}
     ports:
@@ -61,3 +87,4 @@ services:
 
 volumes:
   pgdata:
+  miniodata:

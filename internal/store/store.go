@@ -306,6 +306,58 @@ func (s *Store) SeedGroups(ctx context.Context, ids []string) (seeded int, err e
 	return seeded, nil
 }
 
+// SHA256ForPhoto 查某張 FB 照片是否已經下載過。
+//
+// 在下載前就去重：跨社團轉貼的同一則商品會重複出現同樣的 photo_id，
+// 沒必要為了算出一樣的雜湊再下載一次。
+func (s *Store) SHA256ForPhoto(ctx context.Context, photoID string) (string, bool, error) {
+	if photoID == "" {
+		return "", false, nil
+	}
+	var sum string
+	err := s.pool.QueryRow(ctx,
+		`SELECT sha256 FROM listing_images
+		 WHERE photo_id = $1 AND sha256 IS NOT NULL LIMIT 1`, photoID).Scan(&sum)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return sum, true, nil
+}
+
+// RecordImage 登記一張已存進物件儲存的圖片。
+func (s *Store) RecordImage(ctx context.Context, sha256, objectKey string, size int, contentType string) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO images (sha256, object_key, bytes, content_type)
+		VALUES ($1,$2,$3,$4) ON CONFLICT (sha256) DO NOTHING`,
+		sha256, objectKey, size, nullableStr(contentType))
+	return err
+}
+
+// LinkImage 把圖片掛到 listing 上。sha256 為空表示下載失敗，
+// 仍記錄一列以保留順序與 cdn_url，供日後查證。
+func (s *Store) LinkImage(ctx context.Context, listingID string, idx int, photoID, sha256, cdnURL, caption string) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO listing_images (listing_id, idx, photo_id, sha256, cdn_url, caption)
+		VALUES ($1,$2,$3,$4,$5,$6)
+		ON CONFLICT (listing_id, idx) DO UPDATE SET
+			photo_id = EXCLUDED.photo_id,
+			sha256   = COALESCE(EXCLUDED.sha256, listing_images.sha256),
+			cdn_url  = EXCLUDED.cdn_url,
+			caption  = EXCLUDED.caption`,
+		listingID, idx, nullableStr(photoID), nullableStr(sha256),
+		nullableStr(cdnURL), nullableStr(caption))
+	return err
+}
+
+func (s *Store) MarkImagesFetched(ctx context.Context, listingID string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE listings SET images_fetched = TRUE WHERE id = $1`, listingID)
+	return err
+}
+
 // LastNewItem 回傳最後一次出現新 listing 的時間。
 // 第二個回傳值為 false 表示資料庫還是空的。
 func (s *Store) LastNewItem(ctx context.Context) (time.Time, bool, error) {

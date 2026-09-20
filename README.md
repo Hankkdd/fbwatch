@@ -25,6 +25,35 @@ Marketplace 的儲存搜尋通知在 2024 被移除，Groups API 的讀取端點
 通知路徑，暫不處理。`body` 與 `raw_html` 都已保存，解析器改好後可回頭
 重跑，`parser_version` 用來辨識哪些列需要重算。
 
+## 圖片
+
+商品照片存進 MinIO，以內容雜湊（sha256）為 key，中繼資料在 Postgres
+的 `images` 與 `listing_images` 兩張表。拆兩張是因為多對多 ——
+實測跨社團轉貼佔 39%，同一張圖會被多則 listing 引用，只該存一份。
+
+用 MinIO 而非檔案系統，理由是管理性而非容量（估算約 20GB/年）：
+content-addressed 的路徑用眼睛看不出是什麼，MinIO 的 console 可以
+直接瀏覽與預覽。console 綁在 `BIND_IP` 上。
+
+**圖片下載不需要登入態也不需要瀏覽器** —— 走 `scontent.*.fbcdn.net`，
+純 HTTP GET 即可。所以這段對帳號風險幾乎為零：不同主機、不帶 session、
+不增加 facebook.com 的請求。但網址帶簽章會過期，必須在抓到詳情頁的
+當下就下載，不能只存網址。
+
+兩種頁型的照片欄位不同，都要支援：
+
+| 頁型 | 欄位 |
+|---|---|
+| 商品頁 | `listing_photos[].image` |
+| 貼文頁 | `media.photo_image` 與 `all_subattachments.nodes[].media.image` |
+
+只從這些已知欄位取，不是掃整份文件找 scontent 網址 —— 那會把大頭貼、
+表情符號、介面圖示一起抓進來（實測誤抓過 80x80 的大頭貼），
+另外再加尺寸下限 200px 把關。
+
+已知限制：多圖貼文的初始 HTML 只帶一部分（實測 42 張的貼文拿到 9 張），
+要全部得翻圖片檢視器，那是每張一次請求，不划算。
+
 ## 節奏調整
 
 輪詢間隔與每輪補抓上限都可用環境變數調整（見 `.env.example`），

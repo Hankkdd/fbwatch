@@ -78,3 +78,65 @@ func TestListingPageFindsPostMessageAmongDecoys(t *testing.T) {
 }
 
 const postFixture = `<script type="application/json" data-sjs>{"message":null,"other":1}{"message":{"text":"1\u3001\u6230\u722d\u982d\u76ee\uff1a400\n2\u3001\u5927\u982d\u76ee+\u65d7\u624b+\u75db\u82e6\u5c0f\u5b50\uff1a900\n3\u3001\u9748\u80fd\u5c0f\u5b50\uff1a400"},"creation_time":1789900000}</script>`
+
+// listing_photos 的結構取自 2026-09-21 的實際詳情頁。
+// 一則貼文十幾張圖很常見，順序要保留。
+func TestListingPagePhotos(t *testing.T) {
+	d, ok := ListingPage(photosFixture)
+	if !ok {
+		t.Fatal("應辨識為可用頁面")
+	}
+	if len(d.Photos) != 2 {
+		t.Fatalf("應取到 2 張，實得 %d", len(d.Photos))
+	}
+	if !strings.HasPrefix(d.Photos[0].URL, "https://scontent.") {
+		t.Errorf("第一張網址 = %q", d.Photos[0].URL)
+	}
+	if d.Photos[0].Width != 726 || d.Photos[0].Height != 960 {
+		t.Errorf("尺寸 = %dx%d, want 726x960", d.Photos[0].Width, d.Photos[0].Height)
+	}
+	// FB 自動生成的描述含辨識出的文字，是之後關鍵字搜尋的免費索引來源
+	if !strings.Contains(d.Photos[0].Caption, "WARHAMMER") {
+		t.Errorf("caption 未取到: %q", d.Photos[0].Caption)
+	}
+	if d.Photos[1].ID != "10165206110847422" {
+		t.Errorf("順序或 ID 有誤: %q", d.Photos[1].ID)
+	}
+}
+
+const photosFixture = `<script type="application/json" data-sjs>{"listing_photos":[{"__typename":"Photo","accessibility_caption":"\u53ef\u80fd\u662f\u986f\u793a\u7684\u6587\u5b57\u662f\u300cWARHAMMER 40,000 DARK ANGELS\u300d\u7684\u5716\u50cf","image":{"height":960,"width":726,"uri":"https://scontent.ftpe7-2.fna.fbcdn.net/v/t39.30808-6/aaa.jpg?_nc_cat=1&oh=xx"},"id":"10165206110847421"},{"__typename":"Photo","accessibility_caption":"\u53ef\u80fd\u662f\u73a9\u5177\u7684\u5716\u50cf","image":{"height":766,"width":960,"uri":"https://scontent.ftpe7-1.fna.fbcdn.net/v/t39.30808-6/bbb.jpg?_nc_cat=2&oh=yy"},"id":"10165206110847422"}],"redacted_description":{"text":"\u6e2c\u8a66\u5546\u54c1"},"creation_time":1789900000}</script>`
+
+// 貼文頁的照片在 media.photo_image，與商品頁的 listing_photos 是兩套結構。
+// 頁面裡同時有大頭貼與圖示，必須靠尺寸下限濾掉 —— 實測誤抓過 80x80 的大頭貼。
+func TestExtractPhotosFromPostPage(t *testing.T) {
+	d, ok := ListingPage(postPhotoFixture)
+	if !ok {
+		t.Fatal("應辨識為可用頁面")
+	}
+	if len(d.Photos) != 2 {
+		var got []string
+		for _, p := range d.Photos {
+			got = append(got, p.URL)
+		}
+		t.Fatalf("應取到 2 張大圖，實得 %d：%v", len(d.Photos), got)
+	}
+	for _, p := range d.Photos {
+		if strings.Contains(p.URL, "avatar") || strings.Contains(p.URL, "icon") {
+			t.Errorf("不該抓到大頭貼或圖示：%s", p.URL)
+		}
+	}
+}
+
+// 同一張圖會在不同渲染脈絡重複出現，query 帶不同簽章，要用路徑去重
+func TestExtractPhotosDedupsBySamePath(t *testing.T) {
+	d, _ := ListingPage(postPhotoFixture)
+	paths := map[string]bool{}
+	for _, p := range d.Photos {
+		paths[strings.Split(p.URL, "?")[0]] = true
+	}
+	if len(paths) != len(d.Photos) {
+		t.Fatalf("有重複路徑未去重：%d 張但只有 %d 個路徑", len(d.Photos), len(paths))
+	}
+}
+
+const postPhotoFixture = `<script type="application/json" data-sjs>{"media":{"__typename":"Photo","photo_image":{"height":800,"uri":"https://scontent.example/v/big1.jpg?oh=aa","width":774},"id":"111"},"profile_picture":{"uri":"https://scontent.example/v/avatar.jpg?oh=bb","width":80,"height":80},"message":{"text":"\u6e2c\u8a66\u8cbc\u6587"},"creation_time":1789900000}{"media":{"__typename":"Photo","photo_image":{"height":600,"uri":"https://scontent.example/v/big2.png?oh=cc","width":900},"id":"222"},"dup":{"photo_image":{"height":800,"uri":"https://scontent.example/v/big1.jpg?oh=DIFFERENT","width":774}},"icon":{"photo_image":{"height":16,"uri":"https://scontent.example/v/icon.png","width":16}}}</script>`
