@@ -167,7 +167,7 @@ func fromArticle(n *html.Node) (Listing, bool) {
 		}
 		if m := rePost.FindStringSubmatch(href); m != nil && l.ID == "" {
 			l.ID = m[1]
-			l.Permalink = "https://www.facebook.com" + strings.SplitN(href, "?", 2)[0]
+			l.Permalink = absURL(href)
 		}
 		if m := reUser.FindStringSubmatch(href); m != nil && l.SellerID == "" {
 			l.SellerID = m[1]
@@ -208,6 +208,19 @@ func fromArticle(n *html.Node) (Listing, bool) {
 	// 代價是 permalink 尚未渲染的貼文這一輪會被漏掉，下一輪再抓 ——
 	// 漏一輪遠比洩漏私人內容便宜。
 	return l, l.ID != ""
+}
+
+// absURL 去掉 query string 並補上主機名。
+//
+// href 可能是相對的（/groups/…）也可能已經是絕對的，無條件補前綴會產生
+// https://www.facebook.comhttps://www.facebook.com/… 這種壞網址，
+// 而且壞在抓取階段才會表現為逾時，離成因很遠。
+func absURL(href string) string {
+	u := strings.SplitN(href, "?", 2)[0]
+	if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
+		return u
+	}
+	return "https://www.facebook.com" + u
 }
 
 func attr(n *html.Node, key string) string {

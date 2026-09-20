@@ -19,6 +19,9 @@ type Detail struct {
 	Currency    string
 }
 
+// 貼文頁的內文所在。整串比對，見 ListingPage 裡的說明。
+const msgNeedle = `"message":{"text":`
+
 type jsonText struct {
 	Text string `json:"text"`
 }
@@ -35,9 +38,22 @@ type jsonPrice struct {
 func ListingPage(doc string) (Detail, bool) {
 	var d Detail
 
+	// 商品頁用 redacted_description；一般貼文頁沒有這個欄位，內文在 message.text。
 	var desc jsonText
 	if decodeFieldAfter(doc, "redacted_description", &desc) {
 		d.Description = strings.TrimSpace(desc.Text)
+	}
+	if d.Description == "" {
+		// 必須比對 `"message":{"text":` 整串。單看 `"message":` 在貼文頁
+		// 會命中一堆別的東西（多半是 null），結果解出空字串。
+		if i := strings.Index(doc, msgNeedle); i >= 0 {
+			var msg jsonText
+			if err := json.NewDecoder(
+				strings.NewReader(doc[i+len(`"message":`):]),
+			).Decode(&msg); err == nil {
+				d.Description = strings.TrimSpace(msg.Text)
+			}
+		}
 	}
 
 	var ct int64

@@ -183,3 +183,41 @@ func TestUpsertKeepsValidPostedAt(t *testing.T) {
 		t.Fatalf("posted_at = %v, want %v（合理的過去時間不應被動到）", got, want)
 	}
 }
+
+// 社團清單以資料庫為準。環境變數若持續有效，停用一個社團之後
+// 下次重啟又會被加回來 —— 那等於停用功能失效。
+func TestSeedGroupsOnlyWhenEmpty(t *testing.T) {
+	st, ctx := testStore(t)
+	if _, err := st.pool.Exec(ctx, `DELETE FROM groups`); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := st.SeedGroups(ctx, []string{"g1", "g2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("首次初始化應寫入 2 個，實得 %d", n)
+	}
+
+	if _, err := st.pool.Exec(ctx, `UPDATE groups SET enabled = FALSE WHERE id = 'g2'`); err != nil {
+		t.Fatal(err)
+	}
+
+	// 表已有內容，再次呼叫不該覆寫
+	n, err = st.SeedGroups(ctx, []string{"g1", "g2", "g3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("表已有內容時不該再初始化，實得 %d", n)
+	}
+
+	gs, err := st.EnabledGroups(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gs) != 1 || gs[0].ID != "g1" {
+		t.Fatalf("停用的社團不該回來，實得 %+v", gs)
+	}
+}

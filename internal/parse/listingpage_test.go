@@ -61,3 +61,20 @@ func TestFullBodyImprovesPrice(t *testing.T) {
 }
 
 func contains(s, sub string) bool { return strings.Contains(s, sub) }
+
+// 貼文頁裡 `"message":` 會出現多次且多半是 null。只比對鍵名會解出空字串，
+// 而且表現為「補抓成功但 0 字」—— 看起來正常，其實資料是空的。
+func TestListingPageFindsPostMessageAmongDecoys(t *testing.T) {
+	d, ok := ListingPage(postFixture)
+	if !ok {
+		t.Fatal("應辨識為可用頁面")
+	}
+	if !strings.Contains(d.Description, "戰爭頭目") {
+		t.Fatalf("內文未取到，實得 %q", d.Description)
+	}
+	if d.CreatedAt.IsZero() {
+		t.Error("貼文頁也該取得 creation_time")
+	}
+}
+
+const postFixture = `<script type="application/json" data-sjs>{"message":null,"other":1}{"message":{"text":"1\u3001\u6230\u722d\u982d\u76ee\uff1a400\n2\u3001\u5927\u982d\u76ee+\u65d7\u624b+\u75db\u82e6\u5c0f\u5b50\uff1a900\n3\u3001\u9748\u80fd\u5c0f\u5b50\uff1a400"},"creation_time":1789900000}</script>`
