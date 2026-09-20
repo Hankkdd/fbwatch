@@ -1,0 +1,57 @@
+name: fbwatch
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: fbwatch
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?請在 .env 設定 PG_PASSWORD}
+      POSTGRES_DB: fbwatch
+    ports:
+      # 開發機的 5432 已被長期服務佔用，不要搶
+      - "127.0.0.1:${PG_PORT:-55432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fbwatch"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  collector:
+    build:
+      context: .
+      args:
+        # 必須與 chrome-profile 目錄的擁有者一致，否則容器內 Chrome 寫不進去
+        UID: "${HOST_UID:-1002}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      FBWATCH_DSN: postgres://fbwatch:${PG_PASSWORD}@postgres:5432/fbwatch?sslmode=disable
+      FBWATCH_GROUPS: ${FBWATCH_GROUPS}
+      FBWATCH_CDP: http://127.0.0.1:9222
+      FBWATCH_LOOP: ${FBWATCH_LOOP:-0}
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+      VNC_PASSWORD: ${VNC_PASSWORD:?請在 .env 設定 VNC_PASSWORD}
+    ports:
+      # 綁 Tailscale 介面，不要綁 0.0.0.0
+      - "${BIND_IP:-127.0.0.1}:${NOVNC_PORT:-6080}:6080"
+    volumes:
+      # 直接掛宿主機既有的 profile，不要用 named volume。
+      # 重新登入是比「容器內外字型差異」強得多的風險訊號 —— FB 會主動挑戰
+      # 新裝置登入，但不會因為既有 session 的字型清單變動而挑戰。
+      # 沿用同一份 profile 就完全不需要重新登入。
+      - ./chrome-profile:/profile
+    # Chrome 需要遠大於預設 64MB 的 /dev/shm，否則會崩潰
+    shm_size: 2gb
+    security_opt:
+      # Docker 預設的 seccomp 會擋掉 Chrome 建立 user namespace 的 clone，
+      # 導致 zygote 直接死掉。替代方案是 --no-sandbox，但那等於關掉 Chrome 的沙箱，
+      # 而這個瀏覽器要渲染的正是 FB 上不受信任的內容。寧可放寬容器也要留著沙箱。
+      - seccomp:unconfined
+    restart: unless-stopped
+
+volumes:
+  pgdata:

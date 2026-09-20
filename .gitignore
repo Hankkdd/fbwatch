@@ -1,0 +1,13 @@
+.env
+
+# FB 登入態 —— 絕對不能進版控
+chrome-profile/
+
+# 抓下來的貼文內容，含他人個資
+dumps/
+
+# go build ./... 會把執行檔放在根目錄
+/analyze
+/collect
+/dumpdom
+/probe
