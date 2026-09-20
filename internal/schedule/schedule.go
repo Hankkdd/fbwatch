@@ -5,6 +5,7 @@ package schedule
 
 import (
 	"math/rand"
+	"strconv"
 	"time"
 )
 
@@ -21,6 +22,46 @@ func Default() Config {
 		NightMin: 600 * time.Second, NightMax: 1200 * time.Second,
 		NightStart: 1, NightEnd: 6,
 	}
+}
+
+// FromEnv 以環境變數覆寫預設值，讓節奏可以調整而不必改程式。
+//
+// 調快的收益有限：實測 FB 自己把貼文放進動態牆就要 9–16 分鐘，
+// 輪詢相位差只佔其中 1–2 分鐘。頻率加倍主要是換取資料，不是換取速度。
+func FromEnv(getenv func(string) string) Config {
+	c := Default()
+	c.DayMin = envSecs(getenv, "FBWATCH_POLL_DAY_MIN", c.DayMin)
+	c.DayMax = envSecs(getenv, "FBWATCH_POLL_DAY_MAX", c.DayMax)
+	c.NightMin = envSecs(getenv, "FBWATCH_POLL_NIGHT_MIN", c.NightMin)
+	c.NightMax = envSecs(getenv, "FBWATCH_POLL_NIGHT_MAX", c.NightMax)
+
+	// 下限保護：間隔太短會讓「隨機化」失去意義，反而變成穩定的高頻打點
+	const floor = 30 * time.Second
+	if c.DayMin < floor {
+		c.DayMin = floor
+	}
+	if c.DayMax <= c.DayMin {
+		c.DayMax = c.DayMin + time.Second
+	}
+	if c.NightMin < floor {
+		c.NightMin = floor
+	}
+	if c.NightMax <= c.NightMin {
+		c.NightMax = c.NightMin + time.Second
+	}
+	return c
+}
+
+func envSecs(getenv func(string) string, key string, def time.Duration) time.Duration {
+	v := getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return time.Duration(n) * time.Second
 }
 
 // Next 回傳下次輪詢前要等多久。
