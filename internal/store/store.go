@@ -248,6 +248,19 @@ func (s *Store) GroupSeeded(ctx context.Context, groupID string) (bool, error) {
 	return n > 0, nil
 }
 
+// LastNewItem 回傳最後一次出現新 listing 的時間。
+// 第二個回傳值為 false 表示資料庫還是空的。
+func (s *Store) LastNewItem(ctx context.Context) (time.Time, bool, error) {
+	var t *time.Time
+	if err := s.pool.QueryRow(ctx, `SELECT max(first_seen) FROM listings`).Scan(&t); err != nil {
+		return time.Time{}, false, err
+	}
+	if t == nil {
+		return time.Time{}, false, nil
+	}
+	return *t, true, nil
+}
+
 func (s *Store) RecordPoll(ctx context.Context, groupID string, ranAt time.Time, parsed, newItems int, dur time.Duration, runErr error) error {
 	var errStr *string
 	if runErr != nil {

@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -18,6 +19,7 @@ import (
 	"github.com/go-rod/rod/lib/launcher"
 	"golang.org/x/net/html"
 
+	"fbwatch/internal/breaker"
 	"fbwatch/internal/browser"
 	"fbwatch/internal/notify"
 	"fbwatch/internal/parse"
@@ -64,24 +66,99 @@ func main() {
 	}
 
 	sched := schedule.Default()
+	br := breaker.New(maxConsecutiveFailures)
+	var silentAlerted bool
+
 	for {
 		for _, gid := range ids {
-			if err := collectGroup(ctx, st, b, gid, *wait); err != nil {
+			err := collectGroup(ctx, st, b, gid, *wait)
+			switch {
+			case err == nil:
+				br.Success()
+			case errors.Is(err, browser.ErrSessionInvalid):
+				log.Printf("[%s] %v", gid, err)
+				br.Fatal(err.Error())
+			default:
 				log.Printf("[%s] 失敗: %v", gid, err)
+				br.Fail(err.Error())
+			}
+			if br.Tripped() {
+				break
 			}
 		}
+
+		if br.Tripped() {
+			halt(ctx, dc, br.Reason())
+			return
+		}
+
 		if err := fetchBodies(ctx, st, b); err != nil {
 			log.Printf("補抓內文失敗: %v", err)
 		}
 		if err := sendPending(ctx, st, dc); err != nil {
 			log.Printf("通知失敗: %v", err)
 		}
+		checkSilence(ctx, st, dc, &silentAlerted)
+
 		if !*loop {
 			return
 		}
+
 		d := sched.Next(time.Now())
+		if br.State() == breaker.Cooling {
+			d = coolDown
+			log.Printf("連續失敗，冷卻 %s 後重試一次：%s", d, br.Reason())
+		}
 		log.Printf("下次輪詢 %s 後", d.Round(time.Second))
 		time.Sleep(d)
+	}
+}
+
+const (
+	maxConsecutiveFailures = 3
+	coolDown               = 30 * time.Minute
+	silenceThreshold       = 6 * time.Hour
+)
+
+// halt 在熔斷後停止輪詢，但讓行程活著。
+//
+// 不能直接結束：容器設了 restart，結束會被重啟，然後再試一次、再熔斷，
+// 變成「每次重啟打 FB 一次」的迴圈 —— 正是熔斷要避免的事。
+// 留著行程也讓 noVNC 仍可連入重新登入。
+func halt(ctx context.Context, dc *notify.Discord, reason string) {
+	log.Printf("熔斷：%s —— 停止輪詢，等待人工處理", reason)
+	if dc.Enabled() {
+		if err := dc.Send(ctx, "⚠️ fbwatch 已熔斷並停止輪詢\n原因："+reason+
+			"\n請用 noVNC 重新登入後重啟 collector"); err != nil {
+			log.Printf("熔斷告警送出失敗: %v", err)
+		}
+	}
+	select {} // 永久阻塞，不結束行程
+}
+
+// checkSilence 偵測靜默失效：解析器被 FB 改版打壞時，系統看起來一切正常
+// （抓得到頁面、沒有錯誤）但永遠不會有新項目。這比明顯崩潰更危險。
+func checkSilence(ctx context.Context, st *store.Store, dc *notify.Discord, alerted *bool) {
+	last, ok, err := st.LastNewItem(ctx)
+	if err != nil || !ok {
+		return
+	}
+	quiet := time.Since(last)
+	if quiet < silenceThreshold {
+		*alerted = false
+		return
+	}
+	if *alerted {
+		return
+	}
+	*alerted = true
+	msg := fmt.Sprintf("⚠️ fbwatch 已 %s 沒有新項目，解析器可能已被 FB 改版打壞",
+		quiet.Round(time.Minute))
+	log.Print(msg)
+	if dc.Enabled() {
+		if err := dc.Send(ctx, msg); err != nil {
+			log.Printf("靜默告警送出失敗: %v", err)
+		}
 	}
 }
 
@@ -231,7 +308,7 @@ func fetch(b *rod.Browser, gid string, wait time.Duration) ([]parse.Listing, err
 	}
 
 	if out, url := browser.LoggedOut(page); out {
-		return nil, fmt.Errorf("被導向 %s —— 登入態失效，停止", url)
+		return nil, fmt.Errorf("%w：被導向 %s", browser.ErrSessionInvalid, url)
 	}
 
 	root, err := html.Parse(strings.NewReader(doc))
