@@ -3,8 +3,10 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"golang.org/x/net/html"
@@ -56,7 +58,14 @@ func countLinks(n *html.Node) (total int, kinds map[string]int) {
 }
 
 func main() {
-	f, err := os.Open(os.Args[1])
+	textPat := flag.String("text", "", "改為尋找符合此正則的文字節點，並印出其祖先鏈")
+	flag.Parse()
+
+	if flag.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "用法: probe [-text <regexp>] <dump.html>")
+		os.Exit(1)
+	}
+	f, err := os.Open(flag.Arg(0))
 	if err != nil {
 		panic(err)
 	}
@@ -66,14 +75,25 @@ func main() {
 		panic(err)
 	}
 
+	var re *regexp.Regexp
+	if *textPat != "" {
+		re = regexp.MustCompile(*textPat)
+	}
+
 	parent := map[*html.Node]*html.Node{}
 	var found []*html.Node
 	var walk func(*html.Node, *html.Node)
 	walk = func(n, p *html.Node) {
 		parent[n] = p
-		for _, a := range n.Attr {
-			if a.Key == "data-ad-rendering-role" && a.Val == "story_message" {
+		if re != nil {
+			if n.Type == html.TextNode && re.MatchString(n.Data) {
 				found = append(found, n)
+			}
+		} else {
+			for _, a := range n.Attr {
+				if a.Key == "data-ad-rendering-role" && a.Val == "story_message" {
+					found = append(found, n)
+				}
 			}
 		}
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
@@ -82,9 +102,9 @@ func main() {
 	}
 	walk(doc, nil)
 
-	fmt.Printf("找到 %d 個 story_message\n\n", len(found))
+	fmt.Printf("找到 %d 個節點\n\n", len(found))
 	for i, n := range found {
-		fmt.Printf("===== story_message #%d 的祖先鏈 =====\n", i+1)
+		fmt.Printf("===== #%d (%q) 的祖先鏈 =====\n", i+1, strings.TrimSpace(n.Data))
 		cur := n
 		for lvl := 0; lvl < 14 && cur != nil; lvl++ {
 			total, kinds := countLinks(cur)

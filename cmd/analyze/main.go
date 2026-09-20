@@ -34,7 +34,11 @@ func main() {
 		if len(txt) > 400 {
 			txt = txt[:400] + "…"
 		}
-		fmt.Printf("--- [%d] kind=%s id=%s price=%d nt=%d status=%s trunc=%v seller=%s\n", i+1, it.Kind, it.ID, it.Price, it.NTTag, it.Status, it.Truncated, it.SellerID)
+		posted := "(無)"
+		if !it.PostedAt.IsZero() {
+			posted = it.PostedAt.Format("01-02 15:04")
+		}
+		fmt.Printf("--- [%d] id=%s price=%d nt=%d status=%s trunc=%v posted=%s seller=%s\n", i+1, it.ID, it.Price, it.NTTag, it.Status, it.Truncated, posted, it.SellerID)
 		fmt.Printf("    %s\n", it.Permalink)
 		fmt.Printf("    %s\n\n", txt)
 	}

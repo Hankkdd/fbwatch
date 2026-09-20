@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/net/html"
 )
@@ -21,7 +22,8 @@ type Listing struct {
 	Price     int    // 由內文判定，-1 表示沒抓到
 	NTTag     int    // 結構化 NT$ 欄位，不可信，僅作輔助訊號
 	Status    Status
-	RawHTML   string // 容器本身的 HTML，供解析器改版後重跑
+	PostedAt  time.Time // FB 的相對時間換算而來；零值表示抓不到
+	RawHTML   string    // 容器本身的 HTML，供解析器改版後重跑
 }
 
 var (
@@ -46,11 +48,23 @@ func toInt(s string) int {
 // 錨點是 data-virtualized —— FB 的虛擬列表用它標記每個貼文單元。
 // 不要用 role="article"：那些是尚未載入的骨架佔位符，不是真實貼文。
 func Articles(doc *html.Node) []Listing {
+	return ArticlesAt(doc, time.Now())
+}
+
+// ArticlesAt 與 Articles 相同，但以指定的時間換算相對時間戳記。測試用。
+func ArticlesAt(doc *html.Node, now time.Time) []Listing {
+	idx := buildLabelIndex(doc)
+
 	var out []Listing
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
 		if n.Type == html.ElementNode && hasAttr(n, "data-virtualized") {
 			if l, ok := fromArticle(n); ok {
+				// 時間戳記的文字不在卡片裡 —— 卡片內的時間連結用 aria-labelledby
+				// 指向 body 底下的隱藏節點，可見文字由無障礙名稱呈現。
+				if t, ok := resolvePostedAt(collectLabelRefs(n), idx, now); ok {
+					l.PostedAt = t
+				}
 				out = append(out, l)
 			}
 			return // 不進入巢狀單元，避免重複
@@ -61,6 +75,46 @@ func Articles(doc *html.Node) []Listing {
 	}
 	walk(doc)
 	return out
+}
+
+// collectLabelRefs 蒐集子樹裡所有 aria-labelledby / aria-describedby 引用的 id。
+func collectLabelRefs(n *html.Node) string {
+	var ids []string
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode {
+			for _, k := range [...]string{"aria-labelledby", "aria-describedby"} {
+				if v := attr(n, k); v != "" {
+					ids = append(ids, v)
+				}
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(n)
+	return strings.Join(ids, " ")
+}
+
+// buildLabelIndex 建立 id → 文字 的對照表。
+func buildLabelIndex(doc *html.Node) labelIndex {
+	idx := labelIndex{}
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode {
+			if id := attr(n, "id"); id != "" {
+				if t := normalize(text(n)); t != "" && len(t) < 40 {
+					idx[id] = t
+				}
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+	return idx
 }
 
 func findAttr(n *html.Node, key, val string) *html.Node {

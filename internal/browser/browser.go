@@ -37,14 +37,25 @@ func OuterHTML(page *rod.Page) (string, error) {
 	return res.OuterHTML, nil
 }
 
-// WaitForFeed 等到動態牆至少渲染出一個真實貼文單元。
+// baseSettle 是看到第一個貼文單元後的無條件等待。
+// 相鄰的幾則與時間戳記節點都比容器晚出現，立刻截取會少抓。
+const baseSettle = 5 * time.Second
+
+// WaitForFeed 等到動態牆渲染出真實貼文單元。
 //
-// 判斷依據是 data-virtualized 出現，不是 loading-state 消失 ——
+// 貼文的判斷依據是 data-virtualized 出現，不是 loading-state 消失 ——
 // 虛擬列表底下永遠留著未渲染項目的骨架，等它們全部消失的條件永遠不會成立。
-func WaitForFeed(page *rod.Page, timeout, settle time.Duration) (string, error) {
+//
+// ready 由呼叫端提供，用來表達「資料齊了」。browser 套件不該自己猜：
+// 曾經用正則在整份 DOM 找時間字樣，結果命中了選單之類的無關文字而提早收手。
+// ready 為 nil，或在 settle 內始終不成立，都照常回傳目前的 DOM，不視為失敗。
+func WaitForFeed(page *rod.Page, timeout, settle time.Duration, ready func(string) bool) (string, error) {
 	deadline := time.Now().Add(timeout)
+	var doc string
+
 	for {
-		doc, err := OuterHTML(page)
+		var err error
+		doc, err = OuterHTML(page)
 		if err != nil {
 			// DOM 變動造成的暫時性失敗，重試即可
 			if time.Now().After(deadline) {
@@ -54,19 +65,34 @@ func WaitForFeed(page *rod.Page, timeout, settle time.Duration) (string, error) 
 			continue
 		}
 		if strings.Contains(doc, "data-virtualized") {
-			// 再等一下讓相鄰的幾則也渲染出來，多抓幾則
-			time.Sleep(settle)
-			return OuterHTML(page)
+			break
 		}
 		if time.Now().After(deadline) {
 			return doc, fmt.Errorf("等待 feed 渲染逾時（%s 內未出現任何貼文單元）", timeout)
 		}
 		time.Sleep(time.Second)
 	}
+
+	time.Sleep(baseSettle)
+	if d, err := OuterHTML(page); err == nil {
+		doc = d
+	}
+	if ready == nil {
+		return doc, nil
+	}
+
+	extra := time.Now().Add(settle)
+	for !ready(doc) && time.Now().Before(extra) {
+		time.Sleep(2 * time.Second)
+		if d, err := OuterHTML(page); err == nil {
+			doc = d
+		}
+	}
+	return doc, nil
 }
 
 // Load 開新分頁、導向、等渲染，回傳 DOM。呼叫端負責關閉分頁。
-func Load(b *rod.Browser, url string, timeout, settle time.Duration) (*rod.Page, string, error) {
+func Load(b *rod.Browser, url string, timeout, settle time.Duration, ready func(string) bool) (*rod.Page, string, error) {
 	page, err := b.Page(proto.TargetCreateTarget{URL: "about:blank"})
 	if err != nil {
 		return nil, "", err
@@ -78,7 +104,7 @@ func Load(b *rod.Browser, url string, timeout, settle time.Duration) (*rod.Page,
 	// 背景分頁 Chrome 不渲染，FB 的 feed 會永遠停在骨架狀態
 	_ = (proto.PageBringToFront{}).Call(page)
 
-	doc, err := WaitForFeed(page, timeout, settle)
+	doc, err := WaitForFeed(page, timeout, settle, ready)
 	return page, doc, err
 }
 
