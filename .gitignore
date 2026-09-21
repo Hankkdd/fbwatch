@@ -1,7 +1,11 @@
 .env
 
-# FB 登入態 —— 絕對不能進版控
-chrome-profile/
+# FB 登入態 —— 絕對不能進版控。
+#
+# 用萬用字元而不是寫死目錄名：曾經只寫了 chrome-profile/，換帳號時建了
+# chrome-profile-alt/ 卻忘了同步加上，備用帳號的 Cookies 因此被 commit
+# 並推上 GitHub。profile 目錄一律以 chrome-profile 開頭命名。
+chrome-profile*/
 
 # 抓下來的貼文內容，含他人個資
 dumps/
