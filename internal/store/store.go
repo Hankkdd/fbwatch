@@ -129,10 +129,24 @@ func (s *Store) Upsert(ctx context.Context, groupID string, l parse.Listing, now
 const maxBodyAttempts = 3
 
 type Pending struct {
-	ID        string
-	GroupID   string
-	Permalink string
-	Body      string // 完整內文，尚未補抓時退回 feed 上的截斷版
+	ID         string
+	GroupID    string
+	Permalink  string
+	Body       string // 完整內文，尚未補抓時退回 feed 上的截斷版
+	SellerName string
+	Muted      bool // 靜音的賣家只送一行，不送全文
+}
+
+// UpsertSeller 登記賣家。名稱之後可能才抓到，所以不覆蓋成空值。
+func (s *Store) UpsertSeller(ctx context.Context, id, name string) error {
+	if id == "" {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO sellers (id, name) VALUES ($1, $2)
+		ON CONFLICT (id) DO UPDATE SET name = COALESCE(NULLIF(EXCLUDED.name, ''), sellers.name)`,
+		id, name)
+	return err
 }
 
 // PendingBodies 回傳尚未抓過詳情頁、且重試次數未達上限的 listing。
@@ -212,9 +226,12 @@ func (s *Store) RecordBodyAttempt(ctx context.Context, id string) error {
 // PendingNotifications 回傳尚未通知的 listing，舊的優先。
 func (s *Store) PendingNotifications(ctx context.Context, limit int) ([]Pending, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, group_id, permalink, COALESCE(body, body_feed, '') FROM listings
-		WHERE notified_at IS NULL
-		ORDER BY first_seen ASC
+		SELECT l.id, l.group_id, l.permalink, COALESCE(l.body, l.body_feed, ''),
+		       COALESCE(NULLIF(s.label,''), s.name, ''), COALESCE(s.muted, FALSE)
+		FROM listings l
+		LEFT JOIN sellers s ON s.id = l.seller_id
+		WHERE l.notified_at IS NULL
+		ORDER BY l.first_seen ASC
 		LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
@@ -224,7 +241,8 @@ func (s *Store) PendingNotifications(ctx context.Context, limit int) ([]Pending,
 	var out []Pending
 	for rows.Next() {
 		var p Pending
-		if err := rows.Scan(&p.ID, &p.GroupID, &p.Permalink, &p.Body); err != nil {
+		if err := rows.Scan(&p.ID, &p.GroupID, &p.Permalink, &p.Body,
+			&p.SellerName, &p.Muted); err != nil {
 			return nil, err
 		}
 		out = append(out, p)

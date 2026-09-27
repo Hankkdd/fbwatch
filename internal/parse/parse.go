@@ -16,17 +16,18 @@ import (
 )
 
 type Listing struct {
-	ID        string // commerce listing id 或 post id
-	Kind      string // "listing" | "post"
-	Permalink string
-	SellerID  string
-	Text      string // story_message 子樹；feed 上是截斷版
-	Truncated bool   // 內文被 FB 截斷，完整版要另外請求 permalink
-	Price     int    // 由內文判定，-1 表示沒抓到
-	NTTag     int    // 結構化 NT$ 欄位，不可信，僅作輔助訊號
-	Status    Status
-	PostedAt  time.Time // FB 的相對時間換算而來；零值表示抓不到
-	RawHTML   string    // 容器本身的 HTML，供解析器改版後重跑
+	ID         string // commerce listing id 或 post id
+	Kind       string // "listing" | "post"
+	Permalink  string
+	SellerID   string
+	SellerName string
+	Text       string // story_message 子樹；feed 上是截斷版
+	Truncated  bool   // 內文被 FB 截斷，完整版要另外請求 permalink
+	Price      int    // 由內文判定，-1 表示沒抓到
+	NTTag      int    // 結構化 NT$ 欄位，不可信，僅作輔助訊號
+	Status     Status
+	PostedAt   time.Time // FB 的相對時間換算而來；零值表示抓不到
+	RawHTML    string    // 容器本身的 HTML，供解析器改版後重跑
 }
 
 var (
@@ -161,16 +162,25 @@ func fromArticle(n *html.Node) (Listing, bool) {
 		l.Text = full
 	}
 
-	for _, href := range hrefs(n) {
-		if m := reListing.FindStringSubmatch(href); m != nil && l.ID == "" {
+	for _, a := range anchors(n) {
+		if m := reListing.FindStringSubmatch(a.href); m != nil && l.ID == "" {
 			l.ID, l.Kind, l.Permalink = m[1], "listing", "https://www.facebook.com/commerce/listing/"+m[1]+"/"
 		}
-		if m := rePost.FindStringSubmatch(href); m != nil && l.ID == "" {
+		if m := rePost.FindStringSubmatch(a.href); m != nil && l.ID == "" {
 			l.ID = m[1]
-			l.Permalink = absURL(href)
+			l.Permalink = absURL(a.href)
 		}
-		if m := reUser.FindStringSubmatch(href); m != nil && l.SellerID == "" {
-			l.SellerID = m[1]
+		// 賣家 id 與名稱要分開判斷：同一個使用者在卡片裡有兩個連結，
+		// 大頭貼那個文字是空的、姓名那個才有字。綁在一起會鎖在空的那個上。
+		if m := reUser.FindStringSubmatch(a.href); m != nil {
+			if l.SellerID == "" {
+				l.SellerID = m[1]
+			}
+			if l.SellerName == "" {
+				if t := normalize(text(a.node)); t != "" && len([]rune(t)) <= 40 {
+					l.SellerName = t
+				}
+			}
 		}
 	}
 
@@ -232,13 +242,18 @@ func attr(n *html.Node, key string) string {
 	return ""
 }
 
-func hrefs(n *html.Node) []string {
-	var out []string
+type anchor struct {
+	href string
+	node *html.Node
+}
+
+func anchors(n *html.Node) []anchor {
+	var out []anchor
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
 		if n.Type == html.ElementNode && n.Data == "a" {
 			if h := attr(n, "href"); h != "" {
-				out = append(out, h)
+				out = append(out, anchor{href: h, node: n})
 			}
 		}
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
