@@ -125,7 +125,7 @@ func main() {
 			return
 		}
 
-		if err := fetchBodies(ctx, st, b, bs); err != nil {
+		if err := fetchBodies(ctx, st, b, bs, dc); err != nil {
 			log.Printf("補抓內文失敗: %v", err)
 		}
 		if err := sendPending(ctx, st, dc); err != nil {
@@ -215,7 +215,7 @@ func bodiesPerCycle() int {
 // feed 上的內文是伺服器端截斷的，詳情頁的 DOM 也是 —— 但詳情頁的內嵌 JSON
 // 是完整的，所以不需要點「查看更多」，沒有任何互動。
 // 同時能取得精確的 creation_time，比 feed 的相對時間推算準得多。
-func fetchBodies(ctx context.Context, st *store.Store, b *rod.Browser, bs *blob.Store) error {
+func fetchBodies(ctx context.Context, st *store.Store, b *rod.Browser, bs *blob.Store, dc *notify.Discord) error {
 	pending, err := st.PendingBodies(ctx, bodiesPerCycle())
 	if err != nil || len(pending) == 0 {
 		return err
@@ -258,6 +258,14 @@ func fetchBodies(ctx context.Context, st *store.Store, b *rod.Browser, bs *blob.
 		n := saveImages(ctx, st, bs, p.ID, detail.Photos)
 		log.Printf("補抓 %s 完成（%d 字，%d 圖，%s）", p.ID,
 			len([]rune(detail.Description)), n, detail.CreatedAt.Format("01-02 15:04"))
+
+		// 抓完一則就立刻送，不要等整個佇列跑完。
+		//
+		// 佇列是新的排前面，所以新貼文的內文第一個就到手 —— 但先前要等
+		// 後面最多 5 則各自的隨機間隔與載入，實測讓 notice_lag 拖到 1:44。
+		if err := sendPending(ctx, st, dc); err != nil {
+			log.Printf("通知失敗: %v", err)
+		}
 	}
 	return nil
 }
@@ -401,26 +409,18 @@ func collectGroup(ctx context.Context, st *store.Store, b *rod.Browser, gid stri
 }
 
 func fetch(b *rod.Browser, gid string, wait time.Duration) ([]parse.Listing, error) {
-	// 時間戳記的隱藏節點晚於貼文容器出現。少了它是靜默失效 ——
-	// 貼文抓得到、沒有錯誤，只有時間永遠是空的，延遲量測就永遠算不出來。
+	// 不再等時間戳記的隱藏節點出現 —— 那當初是為了從 feed 推算貼文時間，
+	// 每個社團要多花 20 秒。現在每則都會抓詳情頁拿精確的 creation_time
+	// 覆蓋掉推算值，為它多等只是拉長相位差。
+	//
+	// 但仍要等到至少兩則：只等第一則時實測每輪固定只解析到 1 則（原本平均 1.52），
+	// 而品牌帳號會在同一分鐘連發數則，一輪只看一則就會漏。
+	// 上限 4 秒：能湊齊的社團兩三秒內就好，湊不齊的是版面渲染限制、等再久也沒用。
 	ready := func(doc string) bool {
 		root, err := html.Parse(strings.NewReader(doc))
-		if err != nil {
-			return false
-		}
-		items := parse.Articles(root)
-		if len(items) == 0 {
-			return false
-		}
-		for _, it := range items {
-			if !it.PostedAt.IsZero() {
-				return true
-			}
-		}
-		return false
+		return err == nil && len(parse.Articles(root)) >= 2
 	}
-
-	page, doc, err := browser.Load(b, browser.GroupURL(gid), wait, 20*time.Second, ready)
+	page, doc, err := browser.Load(b, browser.GroupURL(gid), wait, 4*time.Second, ready)
 	if page != nil {
 		defer page.Close()
 	}
