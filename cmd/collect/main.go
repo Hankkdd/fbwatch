@@ -341,6 +341,10 @@ func sendPending(ctx context.Context, st *store.Store, dc *notify.Discord) error
 		if p.Body != "" {
 			msg += "\n" + p.Body
 		}
+		// 靜音的賣家只佔一行。不是不通知 —— 完全不出聲會產生靜默盲區。
+		if p.Muted {
+			msg = notify.MutedMessage(p.SellerName, p.Permalink)
+		}
 
 		failed := false
 		for _, part := range notify.Split(msg, notify.MaxMessage) {
@@ -381,6 +385,9 @@ func collectGroup(ctx context.Context, st *store.Store, b *rod.Browser, gid stri
 	now := time.Now()
 	var newIDs []string
 	for _, it := range items {
+		if err := st.UpsertSeller(ctx, it.SellerID, it.SellerName); err != nil {
+			return err
+		}
 		isNew, err := st.Upsert(ctx, gid, it, now)
 		if err != nil {
 			return err
