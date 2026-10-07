@@ -415,3 +415,6 @@ func nullableStr(v string) *string {
 	}
 	return &v
 }
+
+// isNoRows 判斷查詢是否沒有結果。
+func isNoRows(err error) bool { return errors.Is(err, pgx.ErrNoRows) }

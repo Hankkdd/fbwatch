@@ -24,6 +24,7 @@ import (
 	"fbwatch/internal/breaker"
 	"fbwatch/internal/browser"
 	"fbwatch/internal/images"
+	"fbwatch/internal/myship"
 	"fbwatch/internal/notify"
 	"fbwatch/internal/parse"
 	"fbwatch/internal/schedule"
@@ -125,6 +126,9 @@ func main() {
 			return
 		}
 
+		if err := collectShops(ctx, st, dc); err != nil {
+			log.Printf("賣貨便抓取失敗: %v", err)
+		}
 		if err := fetchBodies(ctx, st, b, bs, dc); err != nil {
 			log.Printf("補抓內文失敗: %v", err)
 		}
@@ -268,6 +272,76 @@ func fetchBodies(ctx context.Context, st *store.Store, b *rod.Browser, bs *blob.
 		}
 	}
 	return nil
+}
+
+// collectShops 抓取 7-11 賣貨便的賣場並通知變動。
+//
+// 與 FB 那條路完全獨立：純 HTTP、不碰瀏覽器、不碰登入態，
+// 所以它失敗不該影響 FB 的輪詢，也不進熔斷計數。
+func collectShops(ctx context.Context, st *store.Store, dc *notify.Discord) error {
+	shops, err := st.EnabledShops(ctx)
+	if err != nil || len(shops) == 0 {
+		return err
+	}
+	f := myship.NewFetcher()
+	now := time.Now()
+
+	for _, sh := range shops {
+		items, err := f.Fetch(ctx, sh.ID)
+		if err != nil {
+			log.Printf("[賣貨便 %s] 失敗: %v", sh.ID, err)
+			continue
+		}
+		n, seeded, err := st.SyncShopItems(ctx, sh.ID, items, now)
+		if err != nil {
+			return err
+		}
+		if seeded {
+			// 首次只建基準，否則整個賣場會被當成新上架全部通知出去
+			if err := st.MarkAllShopEventsNotified(ctx, sh.ID, now); err != nil {
+				return err
+			}
+			log.Printf("[賣貨便 %s] 首次執行，%d 件設為基準不通知", sh.ID, len(items))
+			continue
+		}
+		log.Printf("[賣貨便 %s] %d 件，變動 %d 筆", sh.ID, len(items), n)
+	}
+	return sendShopEvents(ctx, st, dc)
+}
+
+func sendShopEvents(ctx context.Context, st *store.Store, dc *notify.Discord) error {
+	if !dc.Enabled() {
+		return nil
+	}
+	events, err := st.PendingShopEvents(ctx, 20)
+	if err != nil || len(events) == 0 {
+		return err
+	}
+	names, err := st.EnabledShops(ctx)
+	if err != nil {
+		return err
+	}
+	shopName := map[string]string{}
+	for _, s := range names {
+		shopName[s.ID] = s.Name
+	}
+
+	var sent []int64
+	for _, e := range events {
+		msg := notify.ShopEventMessage(e.Kind, shopName[e.ShopID], e.Name,
+			e.OldPrice, e.NewPrice, e.OldQty, e.NewQty, myship.ShopURL(e.ShopID))
+		if err := dc.Send(ctx, msg); err != nil {
+			log.Printf("賣貨便通知送出失敗: %v", err)
+			break
+		}
+		sent = append(sent, e.ID)
+		time.Sleep(time.Second) // Discord webhook 有速率限制
+	}
+	if len(sent) == 0 {
+		return nil
+	}
+	log.Printf("賣貨便已通知 %d 筆", len(sent))
+	return st.MarkShopEventsNotified(ctx, sent, time.Now())
 }
 
 // saveImages 下載並保存商品照片，回傳成功的張數。
