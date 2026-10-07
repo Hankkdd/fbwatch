@@ -1,0 +1,33 @@
+[Unit]
+# 開機自動啟動，關機時乾淨停止。
+#
+# compose 裡的 restart: unless-stopped 不夠：2026-09-28 那次重開機，
+# collector 與 minio 是被 SIGKILL 強殺的（exit 137/128），狀態不乾淨，
+# 開機後 Docker 沒把它們帶回來；正常收到 SIGTERM 的 postgres 則回來了。
+# 結果是 postgres 掛在舊網路、新建的 collector 在另一個網路，
+# 解析不到 postgres 這個名字，整整兩個半小時沒有監控也沒有告警。
+#
+# ExecStop 讓關機時先乾淨停止，ExecStart 開機時重新拉起並修正網路。
+Description=fbwatch — FB 社團拍賣監控
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=hankdd
+Group=hankdd
+WorkingDirectory=/home/hankdd/fb-group-watch
+
+# up -d 會順帶修正漂移掉的容器與網路，比單純 start 可靠
+ExecStart=/usr/bin/docker compose up -d
+ExecStop=/usr/bin/docker compose stop
+
+# 開機時 docker 可能還沒完全就緒，給它重試的機會
+Restart=on-failure
+RestartSec=15s
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target
