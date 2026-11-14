@@ -1,0 +1,152 @@
+name: fbwatch
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: fbwatch
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?請在 .env 設定 PG_PASSWORD}
+      POSTGRES_DB: fbwatch
+    ports:
+      # 開發機的 5432 已被長期服務佔用，不要搶
+      - "127.0.0.1:${PG_PORT:-55432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fbwatch"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  minio:
+    image: quay.io/minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER:-fbwatch}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:?請在 .env 設定 MINIO_PASSWORD}
+    ports:
+      # 這台機器的 9000 已被長期服務佔用，不要搶
+      - "127.0.0.1:${MINIO_PORT:-59000}:9000"
+      # console 綁 Tailscale 介面，方便從自己的電腦瀏覽已抓到的圖片
+      - "${BIND_IP:-127.0.0.1}:${MINIO_CONSOLE_PORT:-59001}:9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  collector:
+    build:
+      context: .
+      args:
+        # 必須與 chrome-profile 目錄的擁有者一致，否則容器內 Chrome 寫不進去。
+        # 預設值只是最常見的那個，請在 .env 設成 `id -u` 的結果 ——
+        # 不一致時的症狀是「每次重啟都要重新登入」，離成因很遠。
+        UID: "${HOST_UID:-1000}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    # .env 整個帶進容器，為的是 DISCORD_WEBHOOK_URL_B 這類「之後才會增加」的變數。
+    #
+    # 下面的 environment 仍然逐個寫出來，而且會蓋掉同名的 env_file 項目 ——
+    # 容器內的值跟宿主機不一樣的（DSN 指向 postgres:5432、MINIO_ENDPOINT 指向
+    # minio:9000）必須留在那裡，不能讓 .env 裡的宿主機版本蓋過去。
+    #
+    # 沒有這行的話，社團分流用的 webhook 變數進不到容器，設了也不會生效：
+    # 社團每輪被當成「管道不可用」跳過，而且只在日誌裡留一行。
+    env_file:
+      - .env
+    environment:
+      FBWATCH_DSN: postgres://fbwatch:${PG_PASSWORD}@postgres:5432/fbwatch?sslmode=disable
+      FBWATCH_SEED_FILE: /app/config/seed.yaml
+      FBWATCH_CDP: http://127.0.0.1:9222
+      FBWATCH_LOOP: ${FBWATCH_LOOP:-0}
+      FBWATCH_POLL_DAY_MIN: ${FBWATCH_POLL_DAY_MIN:-}
+      FBWATCH_POLL_DAY_MAX: ${FBWATCH_POLL_DAY_MAX:-}
+      FBWATCH_POLL_NIGHT_MIN: ${FBWATCH_POLL_NIGHT_MIN:-}
+      FBWATCH_POLL_NIGHT_MAX: ${FBWATCH_POLL_NIGHT_MAX:-}
+      FBWATCH_BODIES_PER_CYCLE: ${FBWATCH_BODIES_PER_CYCLE:-}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_USER: ${MINIO_USER:-fbwatch}
+      MINIO_PASSWORD: ${MINIO_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-listing-images}
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+      VNC_PASSWORD: ${VNC_PASSWORD:?請在 .env 設定 VNC_PASSWORD}
+    ports:
+      # 綁 Tailscale 介面，不要綁 0.0.0.0
+      - "${BIND_IP:-127.0.0.1}:${NOVNC_PORT:-6080}:6080"
+    volumes:
+      # 直接掛宿主機的 profile 目錄，不要用 named volume。
+      #
+      # 換帳號時改指到另一個目錄，不要在同一個 profile 上登出再登入：
+      # 主帳號的登入態原封不動保留可隨時退回，備用帳號被 checkpoint 也
+      # 不會波及它，而且不會在主帳號上留下登出事件。
+      - ${PROFILE_DIR:-./chrome-profile}:/profile
+      # 要追什麼。唯讀掛載：這個檔案只在第一次建表時被讀，
+      # 之後的變更請改資料庫，容器沒有理由寫回它。
+      - ./config:/app/config:ro
+    # Chrome 需要遠大於預設 64MB 的 /dev/shm，否則會崩潰
+    shm_size: 2gb
+    security_opt:
+      # Docker 預設的 seccomp 會擋掉 Chrome 建立 user namespace 的 clone，
+      # 導致 zygote 直接死掉。替代方案是 --no-sandbox，但那等於關掉 Chrome 的沙箱，
+      # 而這個瀏覽器要渲染的正是 FB 上不受信任的內容。寧可放寬容器也要留著沙箱。
+      - seccomp:unconfined
+    restart: unless-stopped
+
+  # 讓外部的比價 bot 查貼文用的唯讀 MCP 服務。選配。
+  #
+  # 擺在 profile 後面，預設不啟動 —— 只想要監控與通知的人不必準備這裡的密鑰，
+  # 也不必有下面那個外部網路（外部網路只在該服務真的要起時才驗證）。
+  # 要用就在 .env 設 COMPOSE_PROFILES=mcp，或 `docker compose --profile mcp up`。
+  #
+  # 不對主機開 port：bot 的容器接上同一個外部網路，連 http://fbwatch-mcp:8080/mcp。
+  mcp:
+    profiles: [mcp]
+    build:
+      context: .
+      target: mcp
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      # 必填，但檢查在 cmd/mcp 裡做：compose 的 :? 是整份檔案一起 interpolate，
+      # 寫在這裡會讓「只想起 collector」的人也被擋下來。
+      FBWATCH_MCP_DSN: postgres://fbwatch_mcp:${FBWATCH_MCP_PG_PASSWORD:-}@postgres:5432/fbwatch?sslmode=disable
+      FBWATCH_MCP_TOKEN: ${FBWATCH_MCP_TOKEN:-}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_USER: ${MINIO_USER:-fbwatch}
+      MINIO_PASSWORD: ${MINIO_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-listing-images}
+      # 選填：有設才提供影片逐字稿工具
+      AGENT_HUB_URL: ${AGENT_HUB_URL:-}
+      AGENT_HUB_TOKEN: ${AGENT_HUB_TOKEN:-}
+      TZ: Asia/Taipei
+    networks:
+      default:
+      bot:
+        aliases: [fbwatch-mcp]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+networks:
+  # bot 那邊既有的 docker 網路，名字用 FBWATCH_BOT_NETWORK 指定。
+  # 只有啟用 mcp profile 時才需要它存在。
+  bot:
+    name: ${FBWATCH_BOT_NETWORK:-fbwatch_bot}
+    external: true
+
+volumes:
+  pgdata:
+  miniodata:

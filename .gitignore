@@ -1,0 +1,25 @@
+# 用萬用字元而不是只寫 .env：備份與變體（.env.bak、.env.local、.env.prod）
+# 一樣帶著憑證。下面 chrome-profile 的註解記的就是「只寫死一個名字」害的。
+.env*
+!.env.example
+
+# FB 登入態 —— 絕對不能進版控。
+#
+# 用萬用字元而不是寫死目錄名：曾經只寫了 chrome-profile/，換帳號時建了
+# chrome-profile-alt/ 卻忘了同步加上，備用帳號的 Cookies 因此被 commit
+# 並推上 GitHub。profile 目錄一律以 chrome-profile 開頭命名。
+chrome-profile*/
+
+# 抓下來的貼文內容，含他人個資
+dumps/
+
+# go build ./... 會把執行檔放在根目錄
+/analyze
+/collect
+/dumpdom
+/probe
+
+# 本機設定：要追哪些社團、在意哪些字、盯哪些賣場。
+# 範例檔留著，填好的實際設定不進版控 —— 社團與賣場的組合本身就是個人資訊。
+config/*.yaml
+!config/*.example.yaml

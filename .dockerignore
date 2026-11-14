@@ -1,0 +1,15 @@
+# 用萬用字元而不是只寫一個名字。曾經只寫 chrome-profile/，換帳號時建的
+# chrome-profile-alt/（1.8GB，含有效 Cookies）因此每次建置都被 COPY . . 帶進
+# build 階段的映像層。.gitignore 的註解記的是同一個 bug 害的另一次外洩。
+chrome-profile*/
+.env*
+dumps/
+
+# 執行期用掛載的，不需要進映像
+config/
+
+# 文件
+*.md
+docs/
+
+.git
