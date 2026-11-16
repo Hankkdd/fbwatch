@@ -13,6 +13,12 @@ BEGIN
 END
 $$;
 
-GRANT CONNECT ON DATABASE fbwatch TO fbwatch_mcp;
+-- 資料庫名稱不寫死：測試庫（fbwatch_test）和 CI 都不叫 fbwatch。
+-- 寫死的話，本機測試庫剛好跟正式庫同一個 cluster 才會過，而且授權的是正式庫。
+DO $$
+BEGIN
+	EXECUTE format('GRANT CONNECT ON DATABASE %I TO fbwatch_mcp', current_database());
+END
+$$;
 GRANT USAGE ON SCHEMA public TO fbwatch_mcp;
 GRANT SELECT ON listings, listing_images, images, sellers, groups TO fbwatch_mcp;
