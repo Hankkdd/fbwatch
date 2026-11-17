@@ -36,7 +36,6 @@ var (
 	rePost    = regexp.MustCompile(`/groups/\d+/(?:posts|permalink)/(\d+)`)
 	reUser    = regexp.MustCompile(`/groups/\d+/user/(\d+)`)
 	rePriceNT = regexp.MustCompile(`NT\$\s*([\d,]+)`)
-	rePrice   = regexp.MustCompile(`(?:＄|\$)\s*([\d,]+)|([\d,]+)\s*元`)
 	reSpace   = regexp.MustCompile(`\s+`)
 )
 

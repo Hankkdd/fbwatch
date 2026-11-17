@@ -90,7 +90,8 @@ func (s *commentServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case err == nil:
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		// 標頭已送出，寫到一半失敗也沒有能回給對方的了。
+		_ = json.NewEncoder(w).Encode(resp)
 	case errors.Is(err, store.ErrNotFound):
 		http.Error(w, "fbwatch 沒有收錄這篇貼文", http.StatusNotFound)
 	case errors.Is(err, errBusy), errors.Is(err, context.DeadlineExceeded):

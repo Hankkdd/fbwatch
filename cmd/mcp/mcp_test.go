@@ -227,7 +227,9 @@ func fakeHub(t *testing.T, readyAfter int, fail bool) (*httptest.Server, *int) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/tasks":
 			var in map[string]any
-			json.NewDecoder(r.Body).Decode(&in)
+			if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+				t.Errorf("decode create body: %v", err)
+			}
 			if in["transcriptOnly"] != true || in["workflow"] != "video" || in["message"] != "https://www.youtube.com/watch?v=dQw4w9WgXcQ" {
 				t.Errorf("create body = %v", in)
 			}

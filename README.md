@@ -224,7 +224,15 @@ FBWATCH_TEST_DSN='postgres://fbwatch:<pw>@localhost:55432/fbwatch_test?sslmode=d
 ```
 
 Without `FBWATCH_TEST_DSN` those tests **skip silently** and the run still
-looks green.
+looks green. CI always gives them a database.
+
+```bash
+golangci-lint run ./...
+```
+
+Lint enforces the architecture rules above (the MCP service never touches
+Facebook, `parse` does no I/O, pages open through `browser.Load`). Each error
+says what to do instead; `.golangci.yml` holds the reasons.
 
 Schema changes are plain SQL in `internal/store/migrations/`, applied in
 filename order on every boot, so each one must be idempotent. They define
