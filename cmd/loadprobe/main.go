@@ -1,4 +1,4 @@
-// loadprobe 診斷 browser.LoadPage 的等待行為：
+// loadprobe 診斷 Session.LoadPage 的等待行為：
 // 每秒回報一次取到的 DOM 大小、最終網址、以及關鍵字是否出現。
 package main
 

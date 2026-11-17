@@ -73,7 +73,7 @@ func main() {
 
 func listingIDs(b *rod.Browser, url string) (map[string]bool, error) {
 	ready := func(doc string) bool { return strings.Contains(doc, "/commerce/listing/") }
-	page, doc, err := browser.LoadPage(b, url, 45*time.Second, ready)
+	page, doc, err := browser.NewSession(b).LoadPage(url, 45*time.Second, ready)
 	if page != nil {
 		defer page.Close()
 	}

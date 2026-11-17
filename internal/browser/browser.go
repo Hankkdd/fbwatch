@@ -117,38 +117,25 @@ func WaitForFeed(page *rod.Page, timeout, settle time.Duration, ready func(strin
 	return doc, nil
 }
 
-// Load 開新分頁、導向、等渲染，回傳 DOM。呼叫端負責關閉分頁。
-func Load(b *rod.Browser, url string, timeout, settle time.Duration, ready func(string) bool) (*rod.Page, string, error) {
-	page, err := newPage(b, url)
-	if err != nil {
-		return nil, "", err
-	}
-
-	doc, err := WaitForFeed(page, timeout, settle, ready)
-	return page, doc, err
-}
-
-// LoadPage 導向任意網址並等到 ready 成立，用於動態牆以外的頁面。
+// 開頁面的入口是 Session.Load 與 Session.LoadPage（session.go）。以前這裡有同名的
+// 套件函式，但它們不檢查登入失效，留著就是一條繞過熔斷的路，所以拿掉了。
 //
-// 與 Load 分開是因為 Load 會先等 data-virtualized（虛擬列表的標記），
-// 那只存在於動態牆；商品詳情頁沒有，會白等到逾時。
-func LoadPage(b *rod.Browser, url string, timeout time.Duration, ready func(string) bool) (*rod.Page, string, error) {
-	page, err := newPage(b, url)
-	if err != nil {
-		return nil, "", err
-	}
+// Session.LoadPage 與 Session.Load 分開，是因為 WaitForFeed 會先等 data-virtualized
+//（虛擬列表的標記），那只存在於動態牆；商品詳情頁沒有，會白等到逾時。
 
+// waitForPage 等到 ready 成立。逾時也回傳目前的 DOM。
+func waitForPage(page *rod.Page, timeout time.Duration, ready func(string) bool) (string, error) {
 	deadline := time.Now().Add(timeout)
 	var doc string
 	for {
 		if d, err := OuterHTML(page); err == nil {
 			doc = d
 			if ready == nil || ready(doc) {
-				return page, doc, nil
+				return doc, nil
 			}
 		}
 		if time.Now().After(deadline) {
-			return page, doc, fmt.Errorf("等待頁面就緒逾時（%s）", timeout)
+			return doc, fmt.Errorf("等待頁面就緒逾時（%s）", timeout)
 		}
 		time.Sleep(time.Second)
 	}

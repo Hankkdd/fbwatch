@@ -14,7 +14,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-rod/rod"
 	"golang.org/x/net/html"
 
 	"fbwatch/internal/browser"
@@ -55,7 +54,7 @@ type commentServer struct {
 	st interface {
 		Permalink(ctx context.Context, id string) (string, error)
 	}
-	b     *rod.Browser
+	sess  *browser.Session
 	token string
 
 	mu   sync.Mutex
@@ -65,8 +64,8 @@ type commentServer struct {
 
 func newCommentServer(st interface {
 	Permalink(ctx context.Context, id string) (string, error)
-}, b *rod.Browser, token string) *commentServer {
-	s := &commentServer{st: st, b: b, token: token}
+}, sess *browser.Session, token string) *commentServer {
+	s := &commentServer{st: st, sess: sess, token: token}
 	s.load = s.loadPage
 	return s
 }
@@ -96,6 +95,8 @@ func (s *commentServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "fbwatch 沒有收錄這篇貼文", http.StatusNotFound)
 	case errors.Is(err, errBusy), errors.Is(err, context.DeadlineExceeded):
 		http.Error(w, "瀏覽器忙碌中，請稍後再試", http.StatusServiceUnavailable)
+	case errors.Is(err, browser.ErrSessionInvalid):
+		http.Error(w, "FB 登入態失效，等人工重新登入後重啟 collector；在那之前不開任何 FB 頁面", http.StatusServiceUnavailable)
 	case errors.Is(err, errHalted):
 		http.Error(w, "監控已熔斷（登入失效或被擋），暫停開任何 FB 頁面", http.StatusServiceUnavailable)
 	default:
@@ -110,6 +111,10 @@ func (s *commentServer) get(ctx context.Context, id string) (commentsResponse, e
 	// 不快取：留言是「現在還在不在」的依據，每次問都重抓
 	if halted.Load() {
 		return commentsResponse{}, errHalted
+	}
+	// 不必排隊等瀏覽器：失效的 Session 本來就不會開頁面，早點告訴對方
+	if err := s.sessionErr(); err != nil {
+		return commentsResponse{}, err
 	}
 	permalink, err := s.st.Permalink(ctx, id)
 	if err != nil {
@@ -165,13 +170,12 @@ func (s *commentServer) loadPage(ctx context.Context, url string) (string, error
 	if remaining < 10*time.Second {
 		return "", errBusy
 	}
-	page, _, err := browser.LoadPage(s.b, url, remaining, ready)
+	// 被導向登入頁時，Session 回傳包著 browser.ErrSessionInvalid 的錯誤並就此失效，
+	// 輪詢那邊下一次載入也會直接停手並熔斷
+	page, _, err := s.sess.LoadPage(url, remaining, ready)
 	defer browser.ClosePage(page)
 	if err != nil {
 		return "", err
-	}
-	if out, to := browser.LoggedOut(page); out {
-		return "", errors.New("被導向登入頁：" + to)
 	}
 	select {
 	case <-ctx.Done():
@@ -179,6 +183,13 @@ func (s *commentServer) loadPage(ctx context.Context, url string) (string, error
 	case <-time.After(commentsSettle):
 	}
 	return browser.OuterHTML(page)
+}
+
+func (s *commentServer) sessionErr() error {
+	if s.sess == nil { // 測試替換掉 load 時不需要瀏覽器
+		return nil
+	}
+	return s.sess.Err()
 }
 
 func deadlineOr(ctx context.Context, def time.Time) time.Time {
