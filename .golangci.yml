@@ -53,8 +53,9 @@ linters:
         - pattern: ^rod\.Browser\.Page$
           pkg: ^github\.com/go-rod/rod$
           msg: >-
-            Open pages with browser.Load or browser.LoadPage. They bring the tab to the front, and a
-            background tab never renders the feed: no error, just an empty skeleton forever (SPEC).
+            Open pages with browser.Session's Load or LoadPage. They bring the tab to the front (a
+            background tab never renders the feed: no error, just an empty skeleton forever, SPEC),
+            and they stop touching Facebook once the login session is gone.
 
   exclusions:
     rules:
@@ -62,7 +63,7 @@ linters:
       # left to act on.
       - linters: [errcheck]
         text: "Error return value of `(.*\\.Close|fmt\\.Fprint\\w*)` is not checked"
-      # internal/browser is where Load/LoadPage implement that guarantee. Probes are throwaway
+      # internal/browser is where Session implements those guarantees. Probes are throwaway
       # diagnostics that drive the page themselves, bringToFront included.
       - linters: [forbidigo]
         path: ^(internal/browser|cmd/(dumpdom|gqlprobe|loadprobe|surfaceprobe|probe))/

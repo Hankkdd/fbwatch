@@ -83,7 +83,8 @@ func main() {
 		}
 	}
 
-	b := rod.New().ControlURL(launcher.MustResolveURL(*cdp)).MustConnect()
+	// 所有對 FB 的載入都走同一個 Session：任何一條路徑發現登入失效，其他路徑也立刻停手。
+	sess := browser.NewSession(rod.New().ControlURL(launcher.MustResolveURL(*cdp)).MustConnect())
 	// 圖片儲存是加值功能：連不上就不存圖，不該讓整個監控停擺
 	var bs *blob.Store
 	if ep := os.Getenv("MINIO_ENDPOINT"); ep != "" {
@@ -105,7 +106,7 @@ func main() {
 	// 比價 bot 查留言的內網端點。只在輪詢模式開：手動跑一次的行程不該搶這個埠，
 	// 也不該在結束時讓端點跟著消失。
 	if *loop {
-		go serveComments(envOr("FBWATCH_COMMENTS_ADDR", ":8090"), newCommentServer(st, b, os.Getenv("FBWATCH_MCP_TOKEN")))
+		go serveComments(envOr("FBWATCH_COMMENTS_ADDR", ":8090"), newCommentServer(st, sess, os.Getenv("FBWATCH_MCP_TOKEN")))
 	}
 
 	sched := schedule.FromEnv(os.Getenv)
@@ -136,7 +137,7 @@ func main() {
 		for _, g := range gs {
 			gid := g.ID
 			wd.beat("社團 " + gid)
-			err := collectGroup(ctx, st, b, gid, *wait)
+			err := collectGroup(ctx, st, sess, gid, *wait)
 			switch {
 			case err == nil:
 				br.Success()
@@ -162,7 +163,11 @@ func main() {
 			log.Printf("賣貨便抓取失敗: %v", err)
 		}
 		wd.beat("補抓內文")
-		if err := fetchBodies(ctx, st, b, bs, router, wd); err != nil {
+		if err := fetchBodies(ctx, st, sess, bs, router, wd); err != nil {
+			if errors.Is(err, browser.ErrSessionInvalid) {
+				halt(ctx, dc, err.Error())
+				return
+			}
 			log.Printf("補抓內文失敗: %v", err)
 		}
 		wd.beat("送出通知")
@@ -269,7 +274,7 @@ func bodiesPerCycle() int {
 // feed 上的內文是伺服器端截斷的，詳情頁的 DOM 也是 —— 但詳情頁的內嵌 JSON
 // 是完整的，所以不需要點「查看更多」，沒有任何互動。
 // 同時能取得精確的 creation_time，比 feed 的相對時間推算準得多。
-func fetchBodies(ctx context.Context, st *store.Store, b *rod.Browser, bs *blob.Store, router *notify.Router, wd *watchdog) error {
+func fetchBodies(ctx context.Context, st *store.Store, sess *browser.Session, bs *blob.Store, router *notify.Router, wd *watchdog) error {
 	pending, err := st.PendingBodies(ctx, bodiesPerCycle())
 	if err != nil || len(pending) == 0 {
 		return err
@@ -286,6 +291,11 @@ func fetchBodies(ctx context.Context, st *store.Store, b *rod.Browser, bs *blob.
 		// 逐則報到：這是單步最久的環節，整批算一次會讓看門狗的上限形同虛設
 		wd.beat("補抓內文 " + p.ID)
 
+		// 失效後就別再記嘗試次數：記了會吃掉這些貼文的重試額度，但根本沒去抓
+		if err := sess.Err(); err != nil {
+			return err
+		}
+
 		// 與輪詢請求之間留隨機間隔，不要連續打
 		time.Sleep(time.Duration(5+rand.Intn(15)) * time.Second)
 
@@ -297,9 +307,12 @@ func fetchBodies(ctx context.Context, st *store.Store, b *rod.Browser, bs *blob.
 		// 60 秒而非 30：換帳號後 profile 的 HTTP 快取是空的，
 		// 所有資源都要重新下載，實測 30 秒不夠。快取暖起來後會快很多。
 		browserMu.Lock()
-		page, doc, err := browser.LoadPage(b, p.Permalink, 60*time.Second, ready)
+		page, doc, err := sess.LoadPage(p.Permalink, 60*time.Second, ready)
 		browser.ClosePage(page)
 		browserMu.Unlock()
+		if errors.Is(err, browser.ErrSessionInvalid) {
+			return err
+		}
 		if err != nil {
 			log.Printf("補抓 %s 失敗: %v", p.ID, err)
 			continue
@@ -806,7 +819,7 @@ func storeItems(ctx context.Context, st itemStore, gid string, items []parse.Lis
 	return stored, newIDs, failed, nil
 }
 
-func collectGroup(ctx context.Context, st *store.Store, b *rod.Browser, gid string, wait time.Duration) error {
+func collectGroup(ctx context.Context, st *store.Store, sess *browser.Session, gid string, wait time.Duration) error {
 	start := time.Now()
 	seeded, err := st.GroupSeeded(ctx, gid)
 	if err != nil {
@@ -814,7 +827,7 @@ func collectGroup(ctx context.Context, st *store.Store, b *rod.Browser, gid stri
 	}
 
 	browserMu.Lock()
-	items, err := fetch(b, gid, wait)
+	items, err := fetch(sess, gid, wait)
 	browserMu.Unlock()
 	if err != nil {
 		_ = st.RecordPoll(ctx, gid, start, 0, 0, time.Since(start), err)
@@ -851,7 +864,7 @@ func collectGroup(ctx context.Context, st *store.Store, b *rod.Browser, gid stri
 	return nil
 }
 
-func fetch(b *rod.Browser, gid string, wait time.Duration) ([]parse.Listing, error) {
+func fetch(sess *browser.Session, gid string, wait time.Duration) ([]parse.Listing, error) {
 	// 不再等時間戳記的隱藏節點出現 —— 那當初是為了從 feed 推算貼文時間，
 	// 每個社團要多花 20 秒。現在每則都會抓詳情頁拿精確的 creation_time
 	// 覆蓋掉推算值，為它多等只是拉長相位差。
@@ -863,14 +876,11 @@ func fetch(b *rod.Browser, gid string, wait time.Duration) ([]parse.Listing, err
 		root, err := html.Parse(strings.NewReader(doc))
 		return err == nil && len(parse.Articles(root)) >= 2
 	}
-	page, doc, err := browser.Load(b, browser.GroupURL(gid), wait, 4*time.Second, ready)
+	// 登入失效由 Session 判斷，失效時回傳的錯誤包著 browser.ErrSessionInvalid
+	page, doc, err := sess.Load(browser.GroupURL(gid), wait, 4*time.Second, ready)
 	defer browser.ClosePage(page)
 	if err != nil {
 		return nil, err
-	}
-
-	if out, url := browser.LoggedOut(page); out {
-		return nil, fmt.Errorf("%w：被導向 %s", browser.ErrSessionInvalid, url)
 	}
 
 	root, err := html.Parse(strings.NewReader(doc))

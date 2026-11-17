@@ -231,7 +231,7 @@ golangci-lint run ./...
 ```
 
 Lint enforces the architecture rules above (the MCP service never touches
-Facebook, `parse` does no I/O, pages open through `browser.Load`). Each error
+Facebook, `parse` does no I/O, pages open through `browser.Session`). Each error
 says what to do instead; `.golangci.yml` holds the reasons.
 
 Schema changes are plain SQL in `internal/store/migrations/`, applied in

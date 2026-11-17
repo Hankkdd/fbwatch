@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"fbwatch/internal/browser"
 	"fbwatch/internal/store"
 )
 
@@ -82,6 +84,20 @@ func TestCommentsRefusedWhenHalted(t *testing.T) {
 	defer halted.Store(false)
 	if w := call(s, "Bearer tok", "1234567890"); w.Code != http.StatusServiceUnavailable || len(loads) != 0 {
 		t.Errorf("halted: %d, loads %v", w.Code, loads)
+	}
+}
+
+// 被導向登入頁要告訴 bot「登入失效、別再問」，不是當成一般抓取失敗（502）讓它重問。
+func TestCommentsReportsSessionInvalid(t *testing.T) {
+	var loads []string
+	s := newTestServer(&loads)
+	s.load = func(_ context.Context, url string) (string, error) {
+		loads = append(loads, url)
+		return "", fmt.Errorf("%w：被導向 https://www.facebook.com/login/", browser.ErrSessionInvalid)
+	}
+	w := call(s, "Bearer tok", "1234567890")
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "登入態失效") {
+		t.Errorf("got %d %s", w.Code, w.Body.String())
 	}
 }
 
