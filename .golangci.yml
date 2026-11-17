@@ -1,0 +1,68 @@
+# Lint holds bug checks and the architecture rules from README/SPEC that a machine can check.
+# No style rules: gofmt already runs in CI, and each rule here exists because breaking it is a bug.
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - govet
+    - errcheck
+    - ineffassign
+    - staticcheck
+    - unused
+    - depguard
+    - forbidigo
+
+  settings:
+    staticcheck:
+      # SA = bugs. The S/ST/QF groups are simplification and style.
+      checks: ["SA*"]
+
+    depguard:
+      rules:
+        mcp-never-touches-facebook:
+          files: ["**/cmd/mcp/*.go"]
+          deny:
+            - pkg: github.com/go-rod/rod
+              desc: >-
+                cmd/mcp serves a bot that reads text anyone can post. It only reads what the collector
+                already stored, through a read-only role, and never drives the browser (README, MCP).
+            - pkg: fbwatch/internal/browser
+              desc: cmd/mcp never touches Facebook; read the stored data instead (README, MCP).
+            - pkg: os/exec
+              desc: >-
+                cmd/mcp is driven by untrusted bot input. It answers from the database and never runs
+                commands.
+        parse-is-pure:
+          files: ["**/internal/parse/*.go"]
+          deny:
+            - pkg: github.com/go-rod/rod
+              desc: >-
+                parse turns an HTML tree into listings and nothing else, so tests can feed it saved
+                DOM. Fetch the page in the caller and pass the tree in.
+            - pkg: net/http
+              desc: parse does no I/O; fetch in the caller and pass the tree in.
+            - pkg: github.com/jackc/pgx
+              desc: parse does no I/O; store the result in the caller through internal/store.
+            - pkg: fbwatch/internal/store
+              desc: parse does no I/O; store the result in the caller.
+
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: ^rod\.Browser\.Page$
+          pkg: ^github\.com/go-rod/rod$
+          msg: >-
+            Open pages with browser.Load or browser.LoadPage. They bring the tab to the front, and a
+            background tab never renders the feed: no error, just an empty skeleton forever (SPEC).
+
+  exclusions:
+    rules:
+      # A failed Close after reading, or a failed write to a response or test server, has nothing
+      # left to act on.
+      - linters: [errcheck]
+        text: "Error return value of `(.*\\.Close|fmt\\.Fprint\\w*)` is not checked"
+      # internal/browser is where Load/LoadPage implement that guarantee. Probes are throwaway
+      # diagnostics that drive the page themselves, bringToFront included.
+      - linters: [forbidigo]
+        path: ^(internal/browser|cmd/(dumpdom|gqlprobe|loadprobe|surfaceprobe|probe))/

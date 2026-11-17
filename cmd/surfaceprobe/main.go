@@ -23,11 +23,6 @@ import (
 
 var reListing = regexp.MustCompile(`/commerce/listing/(\d+)`)
 
-type sighting struct {
-	surface string
-	at      time.Time
-}
-
 func main() {
 	cdp := flag.String("cdp", "http://127.0.0.1:9222", "CDP 端點")
 	gid := flag.String("group", "", "社團 ID")
