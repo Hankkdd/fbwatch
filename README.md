@@ -181,7 +181,17 @@ The bot is a separate project; fbwatch only provides this interface.
 | `shop` | storefront id | live item list |
 | `market` | keywords | ~120 days of asking prices across groups and storefronts |
 | `fx` | currency | mid-market rate to TWD, cached |
-| `video` | YouTube URL | transcript, captions or speech recognition |
+| `video` | YouTube URL, optional `offset` (default 0) | transcript page, `has_more`, `next_offset`, `total_chars` |
+
+Video transcripts are paginated to stay below the bot's tool-response limit.
+When `has_more=true`, call `video` again with the same `url` and the returned
+`next_offset` as `offset`, until `has_more=false`. Offsets count Unicode code
+points, not bytes or playback seconds; YouTube playback parameters do not
+select a transcript range. Pages reuse the existing Hub transcription task.
+Only summarize the whole video after reading all pages. A response saying the
+transcript is still being acquired is a separate polling state: retry with the
+same URL and offset. Configure `AGENT_HUB_URL` and `AGENT_HUB_TOKEN` to enable
+this tool.
 
 Off by default. Set `COMPOSE_PROFILES=mcp` plus the two secrets in `.env`.
 

@@ -300,13 +300,6 @@ func TestVideoReportsStillRunningAndFailure(t *testing.T) {
 	}
 }
 
-func TestFormatTranscriptTruncates(t *testing.T) {
-	out := formatTranscript("T", "L", strings.Repeat("字", maxTranscriptRunes+10))
-	if !strings.Contains(out, "逐字稿太長") {
-		t.Error("long transcript not marked as truncated")
-	}
-}
-
 func TestFormatCommentsMarksSellerAndPartial(t *testing.T) {
 	r := commentsResult{Total: 5, Comments: []fbComment{
 		{Author: "買家乙", When: "3小時", Text: "還在嗎"},

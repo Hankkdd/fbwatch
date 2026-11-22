@@ -89,8 +89,9 @@ func main() {
 		t.hub = newHubClient(base, token)
 		mcp.AddTool(server, &mcp.Tool{
 			Name: "video",
-			Description: "讀 YouTube 影片的逐字稿（有字幕用字幕，沒有就語音辨識）。給影片網址，回傳標題與帶時間標記的逐字稿。" +
-				"長影片第一次可能要等幾分鐘；回「還在抓」就稍後用同一個網址再呼叫。",
+			Description: "分頁讀 YouTube 影片的逐字稿（有字幕用字幕，沒有就語音辨識）。給影片網址和 offset（預設 0），回傳標題、帶時間標記的逐字稿及 has_more、next_offset。" +
+				"has_more=true 時，必須用同一個 url 和回傳的 next_offset 作為 offset 繼續呼叫，直到 has_more=false 才能整理全片。" +
+				"網址的起播時間不會選取逐字稿段落。長影片第一次可能要等幾分鐘；回「還在抓」就用相同 url 和 offset 再呼叫。",
 			Annotations: &mcp.ToolAnnotations{Title: "讀影片逐字稿", ReadOnlyHint: true, OpenWorldHint: &yes},
 		}, t.video)
 	}
