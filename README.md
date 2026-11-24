@@ -46,6 +46,7 @@ session, so when Facebook breaks, storefront tracking keeps working.
 | **Full body** | Feed text is truncated; the permalink's embedded JSON is not |
 | **Notify** | Discord webhook, body first, URL last — mobile push only shows the opening |
 | **Highlight** | Keyword hits get one extra line on top; the post text is never altered |
+| **Watch** | Flag a seller and every post of theirs is highlighted, topic filters included |
 | **Filter** | Per-group topic allow-list |
 | **Route** | Per-group webhook, so different groups reach different channels |
 | **Dedup** | Same seller, same content, same channel → notified once |
@@ -156,6 +157,7 @@ Live changes go straight to the database:
 UPDATE groups   SET enabled = FALSE          WHERE id = '...';
 UPDATE keywords SET line    = 'grab this'    WHERE label = '限量';
 UPDATE groups   SET require_patterns = ARRAY['顏料','噴槍'] WHERE id = '...';
+UPDATE sellers  SET label = 'the one with the good stuff', watched = TRUE WHERE id = '...';
 ```
 
 Polling cadence, per-cycle fetch limits and the night window are environment

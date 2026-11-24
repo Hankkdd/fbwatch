@@ -326,3 +326,69 @@ func TestPendingNotificationsCarriesWebhookEnv(t *testing.T) {
 	}
 	t.Fatal("沒撈到剛建的貼文")
 }
+
+// watchedSeller 建一個盯著的賣家與他的一則貼文，回傳 listing id。
+func watchedSeller(t *testing.T, st *Store, ctx context.Context, label string, summon bool) string {
+	t.Helper()
+	sid := fmt.Sprintf("seller-%d", time.Now().UnixNano())
+	if err := st.UpsertSeller(ctx, sid, "FB 上的顯示名稱"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.pool.Exec(ctx,
+		`UPDATE sellers SET label = $2, watched = TRUE, summon = $3 WHERE id = $1`,
+		sid, label, summon); err != nil {
+		t.Fatal(err)
+	}
+	id := sid + "-post"
+	l := sample(id, 100, parse.StatusSelling)
+	l.SellerID = sid
+	if _, err := st.Upsert(ctx, "test-watch-group", l, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = st.pool.Exec(ctx, `DELETE FROM listings WHERE id = $1`, id)
+		_, _ = st.pool.Exec(ctx, `DELETE FROM sellers WHERE id = $1`, sid)
+	})
+	return id
+}
+
+func pendingByID(t *testing.T, st *Store, ctx context.Context, id string) Pending {
+	t.Helper()
+	got, err := st.PendingNotifications(ctx, 200, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range got {
+		if p.ID == id {
+			return p
+		}
+	}
+	t.Fatalf("沒撈到 %s", id)
+	return Pending{}
+}
+
+func TestPendingNotificationsCarriesSellerWatch(t *testing.T) {
+	st, ctx := testStore(t)
+	id := watchedSeller(t, st, ctx, "常出絕版品的那個", true)
+	p := pendingByID(t, st, ctx, id)
+	if !p.SellerWatched || !p.SellerSummon {
+		t.Errorf("盯人設定要跟著貼文出來，實得 watched=%v summon=%v", p.SellerWatched, p.SellerSummon)
+	}
+	// 提示行寫的是你給的稱呼，不是 FB 的顯示名稱 —— label 存在就是為了這個。
+	if p.SellerName != "常出絕版品的那個" {
+		t.Errorf("稱呼應優先於 FB 顯示名稱，實得 %q", p.SellerName)
+	}
+}
+
+func TestSellerCannotBeMutedAndWatchedAtOnce(t *testing.T) {
+	st, ctx := testStore(t)
+	sid := fmt.Sprintf("seller-x-%d", time.Now().UnixNano())
+	if err := st.UpsertSeller(ctx, sid, "矛盾"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = st.pool.Exec(ctx, `DELETE FROM sellers WHERE id = $1`, sid) })
+	if _, err := st.pool.Exec(ctx,
+		`UPDATE sellers SET muted = TRUE, watched = TRUE WHERE id = $1`, sid); err == nil {
+		t.Error("同時靜音又盯著是矛盾設定，資料庫就該擋下來；這種錯在執行期只看得到「怎麼沒跳」")
+	}
+}

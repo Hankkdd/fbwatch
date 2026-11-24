@@ -227,3 +227,19 @@ func TestFilterMatchesCJKMidSentence(t *testing.T) {
 		t.Error("中文應該用子字串比對")
 	}
 }
+
+func TestWatchLineMarksTheLineAsOurs(t *testing.T) {
+	got := WatchLine("常出絕版品的那個")
+	if !strings.HasPrefix(got, bar) {
+		t.Errorf("提示行要有色塊，推播列上沒有 markdown 時全靠它跟原文分開，實得 %q", got)
+	}
+	if !strings.Contains(got, "常出絕版品的那個") {
+		t.Errorf("提示行要寫出是誰，實得 %q", got)
+	}
+}
+
+func TestWatchLineIsEmptyWithoutALabel(t *testing.T) {
+	if got := WatchLine("   "); got != "" {
+		t.Errorf("沒有稱呼就不要多一行空白提示，實得 %q", got)
+	}
+}

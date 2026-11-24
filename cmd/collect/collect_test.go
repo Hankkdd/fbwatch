@@ -220,7 +220,7 @@ func TestShopFailuresKeepCountingAcrossErrorClasses(t *testing.T) {
 func TestAllowSendsImmediatelyOnMatch(t *testing.T) {
 	f := keyword.NewFilter([]string{"顏料"})
 	// 內文還沒定案也照送 —— 已經命中了，等下去只是增加延遲
-	send, decided := allow(f, "出售水性漆顏料一批", false)
+	send, decided := allow(f, "出售水性漆顏料一批", false, false)
 	if !send || !decided {
 		t.Errorf("命中就該馬上送並定案，實得 send=%v decided=%v", send, decided)
 	}
@@ -228,7 +228,7 @@ func TestAllowSendsImmediatelyOnMatch(t *testing.T) {
 
 func TestAllowHoldsWhenBodyNotFinal(t *testing.T) {
 	f := keyword.NewFilter([]string{"顏料"})
-	send, decided := allow(f, "清倉拍賣", false)
+	send, decided := allow(f, "清倉拍賣", false, false)
 	if send {
 		t.Error("沒命中不該送")
 	}
@@ -239,7 +239,7 @@ func TestAllowHoldsWhenBodyNotFinal(t *testing.T) {
 
 func TestAllowDropsWhenBodyIsFinal(t *testing.T) {
 	f := keyword.NewFilter([]string{"顏料"})
-	send, decided := allow(f, "清倉拍賣", true)
+	send, decided := allow(f, "清倉拍賣", true, false)
 	if send {
 		t.Error("沒命中不該送")
 	}
@@ -252,7 +252,7 @@ func TestAllowDropsWhenBodyIsFinal(t *testing.T) {
 func TestAllowPassesEverythingWithoutPatterns(t *testing.T) {
 	f := keyword.NewFilter(nil)
 	for _, final := range []bool{true, false} {
-		send, decided := allow(f, "今天天氣真好，隨手拍的夕陽", final)
+		send, decided := allow(f, "今天天氣真好，隨手拍的夕陽", final, false)
 		if !send || !decided {
 			t.Errorf("沒設過濾應該一律放行（final=%v）", final)
 		}
@@ -303,5 +303,97 @@ func TestIncompleteFetchAccumulatesAcrossCycles(t *testing.T) {
 	}
 	if !f.fail("GMX", shopAlertAfterTrunc) {
 		t.Errorf("連續 %d 輪截斷應該告警", shopAlertAfterTrunc)
+	}
+}
+
+// rulesFor 造一條主題規則，summon 決定命中時要不要叫比價 bot。
+func rulesFor(summon bool) []keyword.Rule {
+	r := keyword.NewRule("限量", "限量品出現了", 10, []string{"限量"})
+	r.Summon = summon
+	return []keyword.Rule{r}
+}
+
+func TestPostAlertWatchedSellerGetsALineWithoutAnyKeyword(t *testing.T) {
+	p := store.Pending{SellerName: "阿狗", SellerWatched: true}
+	got, _ := postAlert(rulesFor(false), p, "隨便賣點東西")
+	if !strings.Contains(got, "阿狗") {
+		t.Errorf("盯著的賣家發文就該有提示行，實得 %q", got)
+	}
+}
+
+func TestPostAlertPutsTheSellerLineAboveTheTopicLine(t *testing.T) {
+	p := store.Pending{SellerName: "阿狗", SellerWatched: true}
+	got, _ := postAlert(rulesFor(false), p, "限量版出清")
+	lines := strings.Split(got, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("賣家與主題都命中時該有兩行，實得 %q", got)
+	}
+	if !strings.Contains(lines[0], "阿狗") || !strings.Contains(lines[1], "限量品出現了") {
+		t.Errorf("盯人那行要在主題之前，實得 %q", got)
+	}
+}
+
+func TestPostAlertUnwatchedSellerOnlyGetsTheTopicLine(t *testing.T) {
+	p := store.Pending{SellerName: "阿狗"}
+	got, _ := postAlert(rulesFor(false), p, "限量版出清")
+	if strings.Contains(got, "阿狗") {
+		t.Errorf("沒盯的賣家不該出現在提示行，實得 %q", got)
+	}
+	if !strings.Contains(got, "限量品出現了") {
+		t.Errorf("主題提示還是要在，實得 %q", got)
+	}
+}
+
+func TestPostAlertWatchedSellerCanSummonWithoutAKeyword(t *testing.T) {
+	p := store.Pending{SellerName: "阿狗", SellerWatched: true, SellerSummon: true}
+	if _, summon := postAlert(rulesFor(false), p, "隨便賣點東西"); !summon {
+		t.Error("盯著又開了 summon 的賣家，發文就該叫比價 bot")
+	}
+}
+
+func TestPostAlertWatchedSellerWithoutSummonStaysQuiet(t *testing.T) {
+	p := store.Pending{SellerName: "阿狗", SellerWatched: true}
+	if _, summon := postAlert(rulesFor(false), p, "隨便賣點東西"); summon {
+		t.Error("只盯著、沒開 summon 的賣家不該叫 bot：叫一次就是一次模型額度")
+	}
+}
+
+func TestPostAlertSummonColumnDoesNothingWithoutWatching(t *testing.T) {
+	p := store.Pending{SellerName: "阿狗", SellerSummon: true}
+	if _, summon := postAlert(rulesFor(false), p, "隨便賣點東西"); summon {
+		t.Error("沒在盯的賣家，summon 欄位不該單獨生效")
+	}
+}
+
+func TestPostAlertKeywordSummonStillWorksForWatchedSellers(t *testing.T) {
+	p := store.Pending{SellerName: "阿狗", SellerWatched: true}
+	if _, summon := postAlert(rulesFor(true), p, "限量版出清"); !summon {
+		t.Error("盯人不該蓋掉主題本來就會叫 bot 的行為")
+	}
+}
+
+func TestPostAlertNeverSummonsOnWantedPosts(t *testing.T) {
+	p := store.Pending{SellerName: "阿狗", SellerWatched: true, SellerSummon: true, Status: "wanted"}
+	got, summon := postAlert(rulesFor(true), p, "限量版徵求")
+	if summon {
+		t.Error("徵求文不是購買機會，不該叫比價 bot")
+	}
+	if !strings.Contains(got, "阿狗") {
+		t.Errorf("不叫 bot 不代表不提示，實得 %q", got)
+	}
+}
+
+func TestPostAlertNeverSummonsForMutedSellers(t *testing.T) {
+	p := store.Pending{SellerName: "阿狗", Muted: true}
+	if _, summon := postAlert(rulesFor(true), p, "限量版出清"); summon {
+		t.Error("靜音賣家不該叫比價 bot")
+	}
+}
+
+func TestAllowLetsWatchedSellersThroughTheTopicFilter(t *testing.T) {
+	f := keyword.NewFilter([]string{"顏料", "噴筆"})
+	send, decided := allow(f, "出清一批絕版品", false, true)
+	if !send || !decided {
+		t.Error("盯著的賣家不該被社團主題過濾擋掉：被擋掉只會看起來像他沒發文")
 	}
 }

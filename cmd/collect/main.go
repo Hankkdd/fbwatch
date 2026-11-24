@@ -621,14 +621,39 @@ func readRouting(ctx context.Context, st *store.Store, r *notify.Router) (groupR
 	return out, nil
 }
 
+// postAlert 決定一則貼文要加哪幾行提示，以及要不要叫比價 bot 出來。
+//
+// 兩個來源：命中的主題（keywords），以及被盯著的賣家（sellers.watched）。
+// 盯人的那行排最前面 —— 先講是誰在發，他賣的是什麼主題其次。
+//
+// 靜音賣家與徵求文一律不叫 bot：那不是購買機會，叫了只是燒額度。
+func postAlert(rules []keyword.Rule, p store.Pending, matchText string) (highlight string, summon bool) {
+	highlight = keyword.Lines(rules, matchText)
+	if p.SellerWatched {
+		if line := keyword.WatchLine(p.SellerName); line != "" && highlight != "" {
+			highlight = line + "\n" + highlight
+		} else if line != "" {
+			highlight = line
+		}
+	}
+	if p.Muted || p.Status == "wanted" {
+		return highlight, false
+	}
+	return highlight, keyword.Summons(rules, matchText) || (p.SellerWatched && p.SellerSummon)
+}
+
 // allow 判斷這則要不要通知，以及現在就能不能定案。
 //
 // 命中就馬上送，不等補抓 —— 延遲是這個系統最在意的東西。
 // 沒命中則要看內文是不是最終版：feed 上的截斷內文可能根本還沒講到關鍵字，
 // 這時候判死會漏掉真正想要的貼文。所以沒命中又還沒定案的先留著，
 // 下一輪補到完整內文再重判。重試上限 3 次，不會無限期卡著。
-func allow(f keyword.Filter, text string, bodyFinal bool) (send, decided bool) {
-	if f.Allows(text) {
+//
+// 盯著的賣家是例外，直接放行：那條規則的理由寫在函式裡。
+func allow(f keyword.Filter, text string, bodyFinal, watched bool) (send, decided bool) {
+	// 盯著的賣家不過主題過濾這一關：你要的是這個人，不是這個主題。
+	// 讓過濾吃掉他的貼文，表面上看起來只會是「他最近沒發」。
+	if watched || f.Allows(text) {
 		return true, true
 	}
 	return false, bodyFinal
@@ -675,7 +700,7 @@ func sendPending(ctx context.Context, st *store.Store, r *notify.Router) error {
 
 		// 社團設了主題過濾就先篩。沒命中而且內文已經定案 → 這輪標掉不再處理；
 		// 沒命中但內文還可能變豐富 → 先留著，下一輪補到完整內文再重判。
-		if send, decided := allow(routing.filters[p.GroupID], matchText, p.BodyFinal); !send {
+		if send, decided := allow(routing.filters[p.GroupID], matchText, p.BodyFinal, p.SellerWatched); !send {
 			if decided {
 				log.Printf("[%s] 不符主題，略過: %s", p.GroupID, firstLine(matchText))
 				filtered = append(filtered, p.ID)
@@ -683,10 +708,12 @@ func sendPending(ctx context.Context, st *store.Store, r *notify.Router) error {
 			continue
 		}
 
-		// 命中在意的主題就在最上面加一行。內文本身一個字都不動 ——
+		highlight, callBot := postAlert(rules, p, matchText)
+
+		// 提示行放在最上面。內文本身一個字都不動 ——
 		// 判斷還是交給人，這只是讓你在通知列上就先知道值不值得點開。
 		msg := notify.PostMessage(notify.Post{
-			Highlight: keyword.Lines(rules, matchText),
+			Highlight: highlight,
 			Title:     p.Title,
 			Body:      p.Body,
 			Permalink: p.Permalink,
@@ -695,9 +722,8 @@ func sendPending(ctx context.Context, st *store.Store, r *notify.Router) error {
 		if p.Muted {
 			msg = notify.MutedMessage(p.SellerName, p.Permalink, keyword.Labels(rules, matchText))
 		}
-		// 命中要比價的主題就叫比價 bot 出來。靜音賣家、徵求文不叫 —— 那不是購買機會，叫了只是燒額度。
 		summon := ""
-		if summonID != "" && !p.Muted && p.Status != "wanted" && keyword.Summons(rules, matchText) {
+		if summonID != "" && callBot {
 			summon = summonID
 			msg = notify.WithMention(msg, summonID)
 		}

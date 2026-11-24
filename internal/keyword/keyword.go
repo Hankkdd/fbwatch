@@ -116,6 +116,18 @@ func Lines(rules []Rule, text string) string {
 	return strings.Join(parts, "\n")
 }
 
+// WatchLine 排出盯人用的提示行：**▌盯著的賣家稱呼**。
+//
+// 跟主題提示共用同一個色塊是刻意的。對讀的人來說兩者是同一類東西 ——
+// 「這行是我們加的」，跟一字未動的原文分開；來源是主題還是人，
+// 看那行寫什麼就知道了，不需要再用樣式區分一次。
+func WatchLine(label string) string {
+	if strings.TrimSpace(label) == "" {
+		return ""
+	}
+	return bar + "**" + label + "**"
+}
+
 // Labels 回傳命中的標籤，給靜音賣家那種只剩一行的場合用。
 func Labels(rules []Rule, text string) []string {
 	m := Match(rules, text)

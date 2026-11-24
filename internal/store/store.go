@@ -144,6 +144,10 @@ type Pending struct {
 	Body       string // 完整內文，尚未補抓時退回 feed 上的截斷版
 	SellerName string
 	Muted      bool // 靜音的賣家只送一行，不送全文
+	// SellerWatched 是盯著的賣家：提示行寫上他的稱呼，而且不受社團主題過濾影響。
+	// 與 Muted 互斥，資料庫層有 CHECK 擋著。
+	SellerWatched bool
+	SellerSummon  bool // 盯著的賣家發文時順便叫比價 bot
 	// WebhookEnv 決定這則要送到哪個聊天室，空字串表示預設的那個。
 	WebhookEnv string
 	// BodyFinal 表示內文不會再變了（補抓成功，或重試次數已用盡）。
@@ -269,6 +273,7 @@ func (s *Store) PendingNotifications(ctx context.Context, limit int, skipWebhook
 	rows, err := s.pool.Query(ctx, `
 		SELECT l.id, l.group_id, l.permalink, COALESCE(l.title, ''), COALESCE(l.status, ''), COALESCE(l.body, l.body_feed, ''),
 		       COALESCE(NULLIF(s.label,''), s.name, ''), COALESCE(s.muted, FALSE),
+		       COALESCE(s.watched, FALSE), COALESCE(s.summon, FALSE),
 		       COALESCE(g.webhook_env, ''),
 		       (l.body_fetched OR l.body_attempts >= $3),
 		       COALESCE(l.seller_id, ''), COALESCE(l.feed_key, ''), COALESCE(l.content_key, '')
@@ -288,7 +293,7 @@ func (s *Store) PendingNotifications(ctx context.Context, limit int, skipWebhook
 	for rows.Next() {
 		var p Pending
 		if err := rows.Scan(&p.ID, &p.GroupID, &p.Permalink, &p.Title, &p.Status, &p.Body,
-			&p.SellerName, &p.Muted, &p.WebhookEnv, &p.BodyFinal,
+			&p.SellerName, &p.Muted, &p.SellerWatched, &p.SellerSummon, &p.WebhookEnv, &p.BodyFinal,
 			&p.SellerID, &p.FeedKey, &p.ContentKey); err != nil {
 			return nil, err
 		}
