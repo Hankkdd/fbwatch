@@ -4,16 +4,29 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"fbwatch/internal/parse"
 )
 
-// 需要一個可寫的 Postgres。未設 FBWATCH_TEST_DSN 就跳過，
+// 需要一個可丟棄的 Postgres。未設 FBWATCH_TEST_DSN 就跳過，
 // 讓 `go test ./...` 在沒有資料庫的環境下仍然可跑。
 //
-//	FBWATCH_TEST_DSN=postgres://fbwatch:pw@localhost:55432/fbwatch?sslmode=disable go test ./internal/store/
+//	docker compose exec postgres createdb -U fbwatch fbwatch_test
+//	FBWATCH_TEST_DSN=postgres://fbwatch:pw@localhost:55432/fbwatch_test?sslmode=disable go test ./internal/store/
+//
+// 這裡的測試會 DELETE 整張 groups / keywords / shops / listings（見 clearSeedTables），
+// 所以**資料庫名稱必須以 _test 結尾**，否則直接 Fatal。
+//
+// 這道檢查是 2026-11-24 補的：那天把正式庫的 DSN 餵進來跑測試，
+// 社團、關鍵字、賣場與兩個月的 listings 全部被清掉。設定是用 pageinspect
+// 從 heap 的死亡 tuple 挖回來的；listings 在刪除後幾秒就被 autovacuum
+// 回收，救不回來。正式庫跟測試庫只差一個資料庫名稱，
+// 靠人每次記得打對，遲早會再發生一次 —— 所以改成機器擋。
+const testDBSuffix = "_test"
+
 func testStore(t *testing.T) (*Store, context.Context) {
 	t.Helper()
 	dsn := os.Getenv("FBWATCH_TEST_DSN")
@@ -24,6 +37,17 @@ func testStore(t *testing.T) (*Store, context.Context) {
 	st, err := Open(ctx, dsn)
 	if err != nil {
 		t.Fatalf("連線失敗: %v", err)
+	}
+	var db string
+	if err := st.pool.QueryRow(ctx, `SELECT current_database()`).Scan(&db); err != nil {
+		st.Close()
+		t.Fatalf("取不到資料庫名稱，無法確認這是不是測試庫: %v", err)
+	}
+	if !strings.HasSuffix(db, testDBSuffix) {
+		st.Close()
+		t.Fatalf("拒絕在 %q 上跑測試：這些測試會清空 groups / keywords / shops / listings，"+
+			"資料庫名稱必須以 %s 結尾。請另外建一個，例如 createdb fbwatch%s",
+			db, testDBSuffix, testDBSuffix)
 	}
 	if err := st.Migrate(ctx); err != nil {
 		t.Fatalf("migrate 失敗: %v", err)

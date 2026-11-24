@@ -236,6 +236,10 @@ FBWATCH_TEST_DSN='postgres://fbwatch:<pw>@localhost:55432/fbwatch_test?sslmode=d
 Without `FBWATCH_TEST_DSN` those tests **skip silently** and the run still
 looks green. CI always gives them a database.
 
+These tests truncate `groups`, `keywords`, `shops` and `listings`, so the helper
+refuses any database whose name does not end in `_test`. Point it at the wrong
+one and the run fails immediately instead of emptying it.
+
 ```bash
 golangci-lint run ./...
 ```
