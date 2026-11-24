@@ -4,6 +4,7 @@
 chrome-profile*/
 .env*
 dumps/
+backups/
 
 # 執行期用掛載的，不需要進映像
 config/

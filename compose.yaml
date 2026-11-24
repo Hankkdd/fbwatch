@@ -100,6 +100,43 @@ services:
       - seccomp:unconfined
     restart: unless-stopped
 
+  # 每天把資料庫備份到宿主機目錄，保留 14 份。理由與設計見 scripts/backup.sh 開頭。
+  #
+  # 用跟資料庫同一個映像：pg_dump 的版本不能比伺服器舊，綁同一個 tag 就不會錯開。
+  # 存在宿主機目錄而不是 named volume：備份跟資料放在同一個 volume，
+  # 那個 volume 壞掉時就一起沒了。要放到另一顆硬碟就設 FBWATCH_BACKUP_DIR。
+  #
+  # 以 HOST_UID 執行，備份檔的擁有者才會是你，不用 sudo 就能複製或刪除。
+  # 目錄必須事先存在且屬於你（repo 裡的 backups/ 已經是）；讓 docker 自動建的話
+  # 會是 root 的，寫不進去 —— 那時候會失敗並送 Discord 告警，不會默默沒備。
+  #
+  # 手動備一份（動正式庫之前）：docker compose run --rm backup once
+  backup:
+    image: postgres:17-alpine
+    entrypoint: ["/bin/sh", "/backup.sh"]
+    user: "${HOST_UID:-1000}:${HOST_UID:-1000}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: fbwatch
+      PGPASSWORD: ${PG_PASSWORD}
+      PGDATABASE: fbwatch
+      FBWATCH_BACKUP_KEEP: ${FBWATCH_BACKUP_KEEP:-14}
+      FBWATCH_BACKUP_AT: ${FBWATCH_BACKUP_AT:-04:00}
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+      TZ: ${TZ:-Asia/Taipei}
+    volumes:
+      - ./scripts/backup.sh:/backup.sh:ro
+      - ${FBWATCH_BACKUP_DIR:-./backups}:/backups
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
   # 讓外部的比價 bot 查貼文用的唯讀 MCP 服務。選配。
   #
   # 擺在 profile 後面，預設不啟動 —— 只想要監控與通知的人不必準備這裡的密鑰，

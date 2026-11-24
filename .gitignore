@@ -13,6 +13,11 @@ chrome-profile*/
 # 抓下來的貼文內容，含他人個資
 dumps/
 
+# 資料庫備份：整個庫的內容，含他人個資。
+# 目錄本身留在 repo 裡（.gitkeep），clone 下來就屬於你，備份服務才寫得進去。
+backups/*
+!backups/.gitkeep
+
 # go build ./... 會把執行檔放在根目錄
 /analyze
 /collect

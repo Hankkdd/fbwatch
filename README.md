@@ -52,6 +52,7 @@ session, so when Facebook breaks, storefront tracking keeps working.
 | **Dedup** | Same seller, same content, same channel → notified once |
 | **Shops** | 7-11 myship storefronts: new, sold out, relisted, price changed |
 | **Alert** | Login wall, parser breakage, stalls, dead sources — all page you |
+| **Backup** | Daily `pg_dump`, 14 kept, failures page you |
 
 ## Components
 
@@ -197,6 +198,54 @@ this tool.
 
 Off by default. Set `COMPOSE_PROFILES=mcp` plus the two secrets in `.env`.
 
+## Backups
+
+The `backup` service dumps the database every day at 04:00 into `./backups/` and
+keeps the newest 14. It starts with everything else; if no dump is younger than
+24 hours when it starts, it takes one immediately.
+
+| | |
+|---|---|
+| Format | `pg_dump -Fc` — compressed, and single tables can be restored |
+| Safety | Written to a temp file, read back with `pg_restore --list`, then renamed. A half-written dump never counts and never rotates out a good one |
+| Rotation | Only after a successful dump. Repeated failures keep every old file |
+| Failure | Posts to `DISCORD_WEBHOOK_URL` |
+| Settings | `FBWATCH_BACKUP_AT`, `FBWATCH_BACKUP_KEEP`, `FBWATCH_BACKUP_DIR` |
+
+Put `FBWATCH_BACKUP_DIR` on a different disk if you can. The directory must exist
+and belong to `HOST_UID`.
+
+Take one by hand before touching the live database:
+
+```bash
+docker compose run --rm backup once
+```
+
+Restore everything:
+
+```bash
+docker compose stop collector mcp backup
+docker compose exec -T postgres pg_restore -U fbwatch -d fbwatch \
+  --clean --if-exists --no-owner < backups/fbwatch-YYYYMMDD-HHMMSS.dump
+docker compose start collector mcp backup
+```
+
+Restore one table whose rows were deleted:
+
+```bash
+docker compose exec -T postgres psql -U fbwatch -d fbwatch -c 'TRUNCATE keywords'
+docker compose exec -T postgres pg_restore -U fbwatch -d fbwatch \
+  --data-only -t keywords < backups/fbwatch-YYYYMMDD-HHMMSS.dump
+```
+
+Do not use `--clean -t` for a single table: it recreates the table without its
+primary key and indexes, and nothing tells you.
+
+On a fresh machine, errors about the role `fbwatch_mcp` are expected; the
+collector recreates it and its grants on startup.
+
+Photos live in MinIO and are not part of this backup.
+
 ## When it breaks
 
 It will break. The design assumes that, and prefers stopping loudly over
@@ -268,6 +317,7 @@ Covered by `.gitignore`, but the reasons are worth knowing:
 - `.env*` — database, VNC and MinIO credentials, Discord webhooks
 - `config/*.yaml` — which groups and storefronts you follow is itself personal
 - `dumps/` — captured posts, containing other people's data
+- `backups/` — the whole database, same reason
 
 ## Documentation
 
