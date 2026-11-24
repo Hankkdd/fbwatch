@@ -124,3 +124,27 @@ func TestSleepBeatingStopsBeatingWhenWaitEnds(t *testing.T) {
 		t.Fatalf("等待結束後仍在報到：停滯只算到 %s", d)
 	}
 }
+
+// 熔斷之後看門狗不能再開槍。
+//
+// 2026-11-24 的事故：帳號被 checkpoint，熔斷停了下來，但 halt() 是永久阻塞，
+// 不再向看門狗報到，於是看門狗每 5 分鐘判定「卡死」砍掉進程，容器重啟又去打
+// 一次 FB。6.5 小時內撞了 76 次 checkpoint —— 兩個保護機制互相抵銷，
+// 做出來的事正好是熔斷要避免的。
+func TestWatchdogStandsDownAfterHalt(t *testing.T) {
+	halted.Store(true)
+	defer halted.Store(false)
+
+	w := testWatchdog(50*time.Millisecond, 10*time.Millisecond)
+	var exits int32
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.watch(ctx, nil, func(int) { atomic.AddInt32(&exits, 1) })
+
+	// 完全不報到，停滯時間遠超上限
+	time.Sleep(300 * time.Millisecond)
+
+	if n := atomic.LoadInt32(&exits); n != 0 {
+		t.Fatalf("熔斷後不該再結束進程，實得 %d 次", n)
+	}
+}

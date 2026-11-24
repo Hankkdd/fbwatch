@@ -72,6 +72,16 @@ func (w *watchdog) watch(ctx context.Context, dc *notify.Discord, exit func(int)
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			// 熔斷之後就不要再看了。halt() 會永久阻塞，從看門狗的角度看
+			// 「刻意停下來等人」跟「卡死」長得一模一樣。
+			//
+			// 2026-11-24：帳號被 checkpoint，熔斷正確地停了下來，然後看門狗
+			// 每 5 分鐘把它當成卡死砍掉一次，容器重啟又去打一次 FB ——
+			// 6.5 小時撞了 76 次 checkpoint，正是熔斷要避免的那個迴圈。
+			if halted.Load() {
+				log.Print("看門狗：已熔斷，停止看門（等待人工處理）")
+				return
+			}
 			d, where := w.stalled()
 			if d < w.limit {
 				continue
